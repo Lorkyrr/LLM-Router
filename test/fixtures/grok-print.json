@@ -1,0 +1,29 @@
+{
+  "text": "ok",
+  "stopReason": "end_turn",
+  "sessionId": "01a18bae-e5ff-7551-9abe-67ce91dd333d",
+  "requestId": "214e38cb-0359-4715-ae27-c6cabf7e1507",
+  "cwd": "/home/mateus/Documentos/Coding/LLM-Router/.worktrees/router-mvp",
+  "thought": "O usuário pediu uma resposta apenas com \"ok\".",
+  "usage": {
+    "input_tokens": 20071,
+    "cache_read_input_tokens": 7040,
+    "cache_creation_input_tokens": 0,
+    "output_tokens": 150,
+    "reasoning_tokens": 149,
+    "total_tokens": 27261
+  },
+  "num_turns": 1,
+  "total_cost_usd": 0.01515108,
+  "total_cost_usd_ticks": 151510800,
+  "modelUsage": {
+    "grok-4.7-build": {
+      "inputTokens": 20071,
+      "outputTokens": 150,
+      "cacheReadInputTokens": 7040,
+      "cacheCreationInputTokens": 0,
+      "modelCalls": 1,
+      "costUSD": 0.01515108
+    }
+  }
+}
