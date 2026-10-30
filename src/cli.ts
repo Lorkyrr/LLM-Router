@@ -2,7 +2,7 @@ import { makeClaudeCode } from "./adapters/claude-code.ts";
 import { makeGrokBuild } from "./adapters/grok-build.ts";
 import { loadConfig } from "./config.ts";
 import { realExec } from "./exec.ts";
-import { runStep } from "./runner/run-step.ts";
+import { runPlan } from "./runner/run-plan.ts";
 import { openDb } from "./store/db.ts";
 import { makeRepo } from "./store/repo.ts";
 
@@ -31,18 +31,9 @@ async function main(): Promise<number> {
     runner: "hosted" as const,
   };
 
-  repo.updateTask(taskId, { status: "running" });
-  // shortcut: ordem por seq, sem olhar depends_on; trocar por run-plan quando ele existir.
-  for (const step of repo.listSteps(taskId).filter((s) => s.status === "pending")) {
-    const out = await runStep(deps, step.id);
-    console.log(`step ${step.seq}: ${out.status} (${out.attempts} attempts)`);
-    if (out.status !== "done") {
-      repo.updateTask(taskId, { status: out.status });
-      return 1;
-    }
-  }
-  repo.updateTask(taskId, { status: "done" });
-  return 0;
+  const out = await runPlan(deps, taskId);
+  console.log(JSON.stringify(out));
+  return out.failed.length + out.blocked.length + out.waiting_quota.length ? 1 : 0;
 }
 
 if (import.meta.main) {
