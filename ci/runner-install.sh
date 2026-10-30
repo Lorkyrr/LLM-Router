@@ -19,6 +19,7 @@ fi
 [ -x "$DIR/config.sh" ] || tar xzf "$TARBALL" -C "$DIR"
 
 cd "$DIR"
+echo "$REPO" > .repo
 # O token de registro expira em 1h; não é gravado em lugar nenhum.
 TOKEN="$(gh api -X POST "repos/${REPO}/actions/runners/registration-token" --jq .token)"
 ./config.sh --unattended --url "https://github.com/${REPO}" --token "$TOKEN" \
