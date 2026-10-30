@@ -1,0 +1,9 @@
+{
+  "mcpServers": {
+    "llm-router": {
+      "command": "node",
+      "args": ["--import", "tsx", "src/main.ts"],
+      "env": { "ROUTER_DB": "router.db" }
+    }
+  }
+}
