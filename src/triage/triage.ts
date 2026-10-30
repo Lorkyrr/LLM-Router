@@ -1,0 +1,60 @@
+import { z } from "zod";
+import { PHASES, TIERS, type Config, type Effort, type Phase, type Tier } from "../config.ts";
+import type { Adapter, AdapterName } from "../adapters/types.ts";
+
+export type Triage = { phase: Phase; tier: Tier; effort: Effort };
+export type TriageOptions = { cwd: string; overrideTier?: Tier };
+
+const MAX_TRIES = 2;
+const answer = z.object({ phase: z.enum(PHASES), tier: z.enum(TIERS) });
+
+const prompt = (cfg: Config, request: string) =>
+  `Você classifica pedidos de programação. Responda SOMENTE com JSON: {"phase": "...", "tier": "..."}.
+Fases e a categoria de cada uma:
+${PHASES.map((p) => `- ${p} → ${cfg.phases[p].tier}`).join("\n")}
+Guia:
+- simple_edit (cheap): troca trivial e isolada (renomear, ajustar um valor, texto), sem afetar estrutura.
+- implementing (mid): implementar uma parte que se conecta a outras, código concorrente, testes.
+- planning, integration, full_review (strong): desenhar estrutura e dividir trabalho, refatorar, juntar partes, revisar tudo.
+Na dúvida entre duas categorias, escolha a mais alta.
+Pedido: ${request}`;
+
+function parseAnswer(cfg: Config, text: string): Triage | null {
+  const json = text.match(/\{[^{}]*\}/)?.[0];
+  if (!json) return null;
+  let raw: unknown;
+  try {
+    raw = JSON.parse(json);
+  } catch {
+    return null;
+  }
+  const r = answer.safeParse(raw);
+  // O modelo barato erra mais na categoria que na fase; a fase manda e a categoria só confirma.
+  if (!r.success || cfg.phases[r.data.phase].tier !== r.data.tier) return null;
+  return { phase: r.data.phase, tier: r.data.tier, effort: cfg.phases[r.data.phase].effort };
+}
+
+export async function triage(
+  cfg: Config,
+  adapters: Record<AdapterName, Adapter>,
+  request: string,
+  opts: TriageOptions,
+): Promise<Triage> {
+  if (opts.overrideTier) {
+    const phase = PHASES.find((p) => cfg.phases[p].tier === opts.overrideTier)!;
+    return { phase, tier: opts.overrideTier, effort: cfg.phases[phase].effort };
+  }
+  const model = cfg.models[cfg.triage.model]!;
+  for (let i = 0; i < MAX_TRIES; i++) {
+    const r = await adapters[model.adapter].run({
+      model: model.id,
+      effort: cfg.triage.effort,
+      prompt: prompt(cfg, request),
+      cwd: opts.cwd,
+    });
+    if (!r.ok) throw new Error(`triage: model call failed: ${r.error ?? "unknown error"}`);
+    const parsed = parseAnswer(cfg, r.text);
+    if (parsed) return parsed;
+  }
+  throw new Error(`triage: invalid answer after ${MAX_TRIES} tries`);
+}
