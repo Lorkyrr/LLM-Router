@@ -1,0 +1,26 @@
+name: router-cloud
+
+on:
+  workflow_dispatch:
+    inputs:
+      task:
+        description: Task id to run
+        required: true
+
+jobs:
+  run:
+    runs-on: ubuntu-latest
+    env:
+      # Chaves só via Secrets; nunca em arquivo nem input.
+      ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+      XAI_API_KEY: ${{ secrets.XAI_API_KEY }}
+      GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      ROUTER_DB: ${{ runner.temp }}/router.db
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+      - run: npm ci
+      # Só categorias barata/média por padrão (dispatch.cloud_tiers em config/router.yaml).
+      - run: node --import tsx src/cli.ts run --task ${{ inputs.task }}

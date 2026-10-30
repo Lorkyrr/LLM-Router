@@ -16,6 +16,7 @@ flowchart TB
   end
 
   BR <-->|MCP| R
+  GK[Grok bot: só ponte] <--> BR
   BR -->|PC desligado: gh workflow run| GH
 
   subgraph CORE[Núcleo do router]
@@ -31,7 +32,8 @@ flowchart TB
   AV --> CAT
 
   Q --> AD{Adaptadores}
-  AD --> CC[claude-code] & GB[grok build] & ZD[zed] & AG[antigravity] & CX[codex] & GK[grok bot]
+  AD --> CC[claude-code] & GB[grok build]
+  AD -.fora do MVP.-> ZD[zed] & AG[antigravity] & CX[codex]
 
   subgraph IMP[Importadores de sessão]
     I1[JSONL do Claude]
@@ -42,7 +44,7 @@ flowchart TB
   IMP --> R
   SYNC -->|PC ligado| CLOUDSTORE[(Cópia das sessões)]
 
-  CC & GB & ZD & AG & CX & GK --> BRANCH[Branch por passo e PR]
+  CC & GB --> BRANCH[Branch por passo e PR]
   BRANCH --> SH
   BRANCH --> GH[GitHub Actions hospedado]
   SH & GH --> TEST{Testes no kind e cluster derrubado}
@@ -97,8 +99,8 @@ models:
 
 tiers:
   cheap:  [gemini-flash, haiku, grok-fast, codex-mini]   # Gemini antes do Haiku
-  mid:    [sonnet, gpt-codex, gemini-pro]
-  strong: [opus, gemini-pro, grok-reasoning]
+  mid:    [sonnet, gpt-codex]
+  strong: [opus, gemini-pro, grok-reasoning]   # cada modelo em uma só categoria (gemini-pro só em strong)
 
 phases:
   planning:     { tier: strong, effort: high }
@@ -120,6 +122,13 @@ dispatch:
   local: self-hosted   # PC ligado
   cloud: github-actions # PC desligado (workflow_dispatch, chaves nos Secrets)
 ```
+
+## Escopo do MVP
+
+- **Dentro:** adaptadores `claude-code` e `grok-build`, triagem, planejador, CI no kind, merge automático, modo nuvem.
+- **Fora do MVP:** adaptadores `zed`, `antigravity` e `codex`, e todos os importadores de sessão (JSONL do Claude/Grok, SQLite do zed, conversas do antigravity). Aparecem no diagrama e na estrutura como destino, não como entrega.
+- **Grok bot:** só ponte (canal de conversa com o usuário), nunca executa passos; não é um adaptador de execução.
+- **Categorias:** cada modelo vive em uma só categoria (ex.: `gemini-pro` só em strong); o fallback nunca desce de categoria.
 
 ## Regras principais
 
