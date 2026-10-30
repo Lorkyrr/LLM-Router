@@ -55,3 +55,15 @@ test("publishBranch surfaces a failing push", async () => {
   ]);
   await assert.rejects(() => publishBranch(exec, { worktree: "/wt", branch: "b", base: "main", title: "t", body: "" }), /sem permissão/);
 });
+
+test("publishBranch on an existing PR pushes the new commit and reuses the number", async () => {
+  const exec = fakeExec([
+    { when: is("git", "add"), reply: ok() },
+    { when: is("git", "status"), reply: ok(" M a\n") },
+    { when: is("git", "commit"), reply: ok() },
+    { when: is("git", "push"), reply: ok() },
+  ]);
+  const r = await publishBranch(exec, { worktree: "/wt", branch: "b", base: "main", title: "t", body: "", pr_number: 9 });
+  assert.deepEqual(r, { changed: true, pr_number: 9 });
+  assert.ok(!exec.calls.some((c) => c.cmd === "gh"));
+});
