@@ -1,0 +1,51 @@
+# Nomes de modelo: ids reais conferidos neste PC (claude --model, grok models).
+# Preços em USD por 1M de tokens são estimativas: ajuste aos valores da sua conta.
+# O custo gravado nas tentativas é o `total_cost_usd` que o CLI devolve; o preço só cobre o que faltar e a linha de base.
+
+triage: { model: haiku-5-5, effort: low }
+
+models:
+  haiku-5-5:
+    { adapter: claude-code, id: claude-haiku-5-5, tier: cheap, price: { input: 1, output: 5, cache_read: 0.1, cache_write: 1.25 } }
+  grok-fast:
+    { adapter: grok-build, id: grok-4.7-build-fast, tier: cheap, price: { input: 0.5, output: 2, cache_read: 0.05, cache_write: 0.5 } }
+  sonnet-5-5:
+    { adapter: claude-code, id: claude-sonnet-5-5, tier: mid, price: { input: 3, output: 15, cache_read: 0.3, cache_write: 3.75 } }
+  opus-5-5:
+    { adapter: claude-code, id: claude-opus-5-5, tier: strong, price: { input: 5, output: 25, cache_read: 0.5, cache_write: 6.25 } }
+  grok-reasoning:
+    { adapter: grok-build, id: grok-4.7, tier: strong, price: { input: 3, output: 15, cache_read: 0.3, cache_write: 3 } }
+
+# Ordem = preferência. Cada modelo aparece em uma só categoria; o fallback nunca desce de categoria.
+tiers:
+  cheap: [haiku-5-5, grok-fast]
+  mid: [sonnet-5-5]
+  strong: [opus-5-5, grok-reasoning]
+
+phases:
+  planning: { tier: strong, effort: high }
+  implementing: { tier: mid, effort: medium }
+  integration: { tier: strong, effort: medium }
+  full_review: { tier: strong, effort: high }
+  simple_edit: { tier: cheap, effort: low }
+
+escalation:
+  max_attempts: 3
+  ladder:
+    cheap:
+      - { tier: cheap, effort: low }
+      - { tier: mid, effort: medium }
+      - { tier: mid, effort: high }
+    mid:
+      - { tier: mid, effort: medium }
+      - { tier: mid, effort: high }
+      - { tier: mid, effort: xhigh }
+    strong:
+      - { tier: strong, effort: high }
+      - { tier: strong, effort: xhigh }
+
+verify: { auto_merge: true, delete_branch: true }
+
+dispatch:
+  cloud_tiers: [cheap, mid]
+  heartbeat_timeout_s: 600
