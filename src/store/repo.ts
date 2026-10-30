@@ -127,6 +127,7 @@ export function makeRepo(db: DatabaseSync, now: () => string = () => new Date().
       toMessage(insert("messages", { ...m, delivered: false })),
     listUndelivered: (): Message[] =>
       db.prepare("SELECT * FROM messages WHERE delivered = 0 ORDER BY created_at").all().map(toMessage),
+    setMessageChannel: (id: string, channel: Channel) => update("messages", id, { channel }),
     markDelivered: (id: string) => update("messages", id, { delivered: true, delivered_at: now() }),
   };
 }

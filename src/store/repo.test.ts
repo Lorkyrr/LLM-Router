@@ -100,3 +100,10 @@ test("messages: undelivered ones are listed until marked delivered", () => {
   repo.markDelivered(m.id);
   assert.equal(repo.listUndelivered().length, 0);
 });
+
+test("setMessageChannel changes the channel of an existing message", () => {
+  const repo = setup();
+  const m = repo.insertMessage({ direction: "out", channel: "grok_bot", body: "x" });
+  repo.setMessageChannel(m.id, "claude");
+  assert.equal(repo.listUndelivered()[0]?.channel, "claude");
+});
