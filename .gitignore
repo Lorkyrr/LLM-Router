@@ -4,3 +4,5 @@ node_modules/
 .worktrees/
 .env
 router.db*
+.handoff/
+graphify-out/
