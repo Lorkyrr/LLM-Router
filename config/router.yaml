@@ -1,4 +1,5 @@
-# Nomes de modelo: ids reais conferidos neste PC (claude --model, grok models).
+# Claude/Grok: ids conferidos anteriormente neste PC; OpenAI: ids da documentação oficial.
+# Acesso real aos modelos OpenAI depende da conta e deve ser confirmado pelo ping.
 # Preços em USD por 1M de tokens são estimativas: ajuste aos valores da sua conta.
 # O custo gravado nas tentativas é o `total_cost_usd` que o CLI devolve; o preço só cobre o que faltar e a linha de base.
 
@@ -6,28 +7,76 @@ triage: { model: haiku-5-5, effort: low }
 
 models:
   haiku-5-5:
-    { adapter: claude-code, id: claude-haiku-5-5, tier: cheap, price: { input: 1, output: 5, cache_read: 0.1, cache_write: 1.25 } }
+    adapter: claude-code
+    id: claude-haiku-5-5
+    tier: cheap
+    price: { input: 0.1, output: 0.5, cache_read: 0.01, cache_write: 0.125 }
+    pricing: { source: "https://platform.claude.com/docs/en/models/haiku-5-5/overview", checked_at: "2026-10-30", basis: standard_short_context }
+    guidance: "Triagem e extração simples em low; medium para tarefas com ferramentas. Preços-base até 100k tokens de prompt."
   grok-fast:
     { adapter: grok-build, id: grok-4.7-build-fast, tier: cheap, price: { input: 0.5, output: 2, cache_read: 0.05, cache_write: 0.5 } }
   sonnet-5-5:
-    { adapter: claude-code, id: claude-sonnet-5-5, tier: mid, price: { input: 3, output: 15, cache_read: 0.3, cache_write: 3.75 } }
+    adapter: claude-code
+    id: claude-sonnet-5-5
+    tier: mid
+    price: { input: 2, output: 10, cache_read: 0.1, cache_write: 2.5 }
+    pricing: { source: "https://platform.claude.com/docs/en/about-claude/pricing", checked_at: "2026-10-30", basis: standard_short_context }
+    guidance: "Implementação e revisão de passos bem especificados em medium; high para problemas difíceis. Alternativa ao Sol."
   opus-5-5:
-    { adapter: claude-code, id: claude-opus-5-5, tier: strong, price: { input: 5, output: 25, cache_read: 0.5, cache_write: 6.25 } }
+    adapter: claude-code
+    id: claude-opus-5-5
+    tier: strong
+    price: { input: 4, output: 20, cache_read: 0.2, cache_write: 5 }
+    pricing: { source: "https://platform.claude.com/docs/en/about-claude/pricing", checked_at: "2026-10-30", basis: standard_short_context }
+    guidance: "Planejamento, refatoração e trabalho longo; high é escolha conservadora do router, medium é o padrão oficial. Entregar brief verificável ao implementador."
   grok-reasoning:
     { adapter: grok-build, id: grok-4.7, tier: strong, price: { input: 3, output: 15, cache_read: 0.3, cache_write: 3 } }
 
+  # OpenAI: USD/1M tokens, API Standard, contexto <=272k, cache-write de 30min.
+  # Referência de custo, não fatura da assinatura. JSONL não informa custos de ferramentas.
+  # Política inicial baseada nas descrições oficiais; ainda sem benchmark comparativo local.
+  gpt-6-luna:
+    adapter: codex
+    id: gpt-6-luna
+    tier: cheap
+    price: { input: 0.1, output: 0.5, cache_read: 0.01, cache_write: 0.125 }
+    pricing: { source: "https://developers.openai.com/api/docs/models/gpt-6-luna", checked_at: "2026-10-30", basis: standard_short_context }
+    guidance: "Triagem e edição trivial isolada em low; dividir ou escalar se houver dependências ou ambiguidade."
+  gpt-6.1-sol:
+    adapter: codex
+    id: gpt-6.1-sol
+    tier: mid
+    price: { input: 2, output: 10, cache_read: 0.1, cache_write: 2.5 }
+    pricing: { source: "https://developers.openai.com/api/docs/models/gpt-6.1-sol", checked_at: "2026-10-30", basis: standard_short_context }
+    guidance: "Implementação planejada, testes e depuração em medium; high mediante falha ou dificuldade demonstrada."
+  gpt-6.1-terra:
+    adapter: codex
+    id: gpt-6.1-terra
+    tier: mid
+    enabled: false
+    price: { input: 1, output: 5, cache_read: 0.05, cache_write: 1.25 }
+    pricing: { source: "https://developers.openai.com/api/docs/models/gpt-6.1-terra", checked_at: "2026-10-30", basis: standard_short_context }
+    guidance: "Opção especializada em visão, interfaces e escrita; habilitar após validar capacidade e acesso no CLI."
+  gpt-6-astra:
+    adapter: codex
+    id: gpt-6-astra
+    tier: strong
+    price: { input: 10, output: 50, cache_read: 1, cache_write: 12.5 }
+    pricing: { source: "https://developers.openai.com/api/docs/models/gpt-6-astra", checked_at: "2026-10-30", basis: standard_short_context }
+    guidance: "Arquitetura difícil, causa raiz e revisão complexa em high; entregar briefs pequenos para implementação em mid."
+
 # Ordem = preferência. Cada modelo aparece em uma só categoria; o fallback nunca desce de categoria.
 tiers:
-  cheap: [haiku-5-5, grok-fast]
-  mid: [sonnet-5-5]
-  strong: [opus-5-5, grok-reasoning]
+  cheap: [haiku-5-5, grok-fast, gpt-6-luna]
+  mid: [sonnet-5-5, gpt-6.1-sol, gpt-6.1-terra]
+  strong: [opus-5-5, grok-reasoning, gpt-6-astra]
 
 phases:
-  planning: { tier: strong, effort: high }
-  implementing: { tier: mid, effort: medium }
-  integration: { tier: strong, effort: medium }
-  full_review: { tier: strong, effort: high }
-  simple_edit: { tier: cheap, effort: low }
+  planning: { tier: strong, effort: high, prefer: [opus-5-5, gpt-6-astra] }
+  implementing: { tier: mid, effort: medium, prefer: [gpt-6.1-sol, sonnet-5-5] }
+  integration: { tier: strong, effort: high, prefer: [gpt-6-astra, opus-5-5] }
+  full_review: { tier: strong, effort: high, prefer: [gpt-6-astra, opus-5-5] }
+  simple_edit: { tier: cheap, effort: low, prefer: [haiku-5-5, gpt-6-luna] }
 
 escalation:
   max_attempts: 3
