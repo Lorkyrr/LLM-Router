@@ -128,6 +128,9 @@ export async function runStep(d: StepDeps, stepId: string): Promise<StepOutcome>
       }).finally(() => d.lease?.release());
       if (verdict.result === "merged") {
         finish({ ci_result: "merged" });
+        // Sem isto cada passo deixa um worktree e um branch local para trás; falha de limpeza não desfaz o merge.
+        await d.exec("git", ["worktree", "remove", "--force", worktree], { cwd: d.repoDir });
+        await d.exec("git", ["branch", "-D", branch], { cwd: d.repoDir });
         repo.updateStep(stepId, { status: "done" });
         return { status: "done", attempts: n };
       }

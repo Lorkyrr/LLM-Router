@@ -1,3 +1,6 @@
+import { mkdirSync } from "node:fs";
+import { dirname, join } from "node:path";
+import { fileURLToPath } from "node:url";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import { makeClaudeCode } from "./adapters/claude-code.ts";
 import { makeGrokBuild } from "./adapters/grok-build.ts";
@@ -7,11 +10,20 @@ import { loadConfig } from "./config.ts";
 import { realExec } from "./exec.ts";
 import { makeLease } from "./runner/lease.ts";
 import { makeServer } from "./server.ts";
-import { openDb } from "./store/db.ts";
+import { defaultDbPath, openDb } from "./store/db.ts";
 import { makeRepo } from "./store/repo.ts";
 
-// Um runner por repositório alvo (conta pessoal não tem runner global): a instância é "owner-repo".
-const runnerInstance = process.env.ROUTER_RUNNER ?? "Lorkyrr-LLM-Router";
+// Registrado em escopo de usuário, o servidor roda com o cwd do projeto aberto: config e scripts vêm da instalação.
+const INSTALL_DIR = join(dirname(fileURLToPath(import.meta.url)), "..");
+
+// Um runner por repositório alvo (conta pessoal não tem runner global): a instância é "owner-repo" do remote origin.
+async function runnerInstance(cwd: string): Promise<string> {
+  if (process.env.ROUTER_RUNNER) return process.env.ROUTER_RUNNER;
+  const r = await realExec("git", ["remote", "get-url", "origin"], { cwd });
+  const m = r.stdout.trim().match(/[:/]([^/:]+)\/([^/]+?)(?:\.git)?$/);
+  if (r.code !== 0 || !m) throw new Error(`cannot derive runner name from origin of ${cwd}; set ROUTER_RUNNER`);
+  return `${m[1]}-${m[2]}`;
+}
 
 const FLUSH_INTERVAL_MS = 5 * 60 * 1000;
 const RECHECK_INTERVAL_MS = 30 * 60 * 1000;
@@ -22,15 +34,23 @@ const grokBot: Transport = async () => {
 };
 
 async function main() {
-  const cfg = loadConfig(process.env.ROUTER_CONFIG ?? "config/router.yaml");
-  const repo = makeRepo(openDb(process.env.ROUTER_DB ?? "router.db"));
+  const cfg = loadConfig(process.env.ROUTER_CONFIG ?? join(INSTALL_DIR, "config/router.yaml"));
+  const dbPath = process.env.ROUTER_DB ?? defaultDbPath();
+  mkdirSync(dirname(dbPath), { recursive: true });
+  const repo = makeRepo(openDb(dbPath));
+  const repoDir = process.env.ROUTER_REPO_DIR ?? process.cwd();
+  // Fora de um repositório git não há runner a ligar: o servidor sobe sem lease em vez de cair.
+  const lease = await runnerInstance(repoDir).then(
+    (instance) =>
+      makeLease(realExec, { up: join(INSTALL_DIR, "ci/runner-up.sh"), down: join(INSTALL_DIR, "ci/runner-down.sh"), args: [instance] }),
+    (e) => (console.error(e instanceof Error ? e.message : e), undefined),
+  );
   const adapters = { "claude-code": makeClaudeCode(realExec), "grok-build": makeGrokBuild(realExec) };
 
   // stdout é o canal MCP: todo log vai para stderr.
   const server = makeServer({
     cfg, adapters, repo, exec: realExec, runner: "self_hosted", base: "main", transport: grokBot,
-    repoDir: process.env.ROUTER_REPO_DIR ?? process.cwd(),
-    lease: makeLease(realExec, { up: "ci/runner-up.sh", down: "ci/runner-down.sh", args: [runnerInstance] }),
+    repoDir, lease,
   });
   await server.connect(new StdioServerTransport());
 

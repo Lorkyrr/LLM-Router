@@ -34,6 +34,7 @@ function setup(agent: RunResult[], ci: Ci[], tier: Tier = "mid", changed: boolea
   const exec = fakeExec([
     { when: (c) => a(c, "fetch"), reply: ok() },
     { when: (c) => a(c, "worktree"), reply: ok() },
+    { when: (c) => a(c, "branch"), reply: ok() },
     { when: (c) => a(c, "add"), reply: ok() },
     { when: (c) => a(c, "status"), reply: () => ok(changed[statuses++] === false ? "" : " M f\n") },
     { when: (c) => a(c, "commit"), reply: ok() },
@@ -191,7 +192,7 @@ test("a step that already has a branch reuses its worktree and PR and keeps atte
   s.repo.updateStep(s.step.id, { status: "failed", branch: "router/step-abcd1234", pr_number: 5 });
   s.repo.insertAttempt({ step_id: s.step.id, n: 1, adapter: "claude-code", model: "sonnet-5-5", tier: "mid", effort: "medium", runner: "hosted" });
   assert.deepEqual(await runStep(s.deps, s.step.id), { status: "done", attempts: 2 });
-  assert.ok(!s.exec.calls.some((c) => c.args[0] === "worktree"), "no worktree add");
+  assert.ok(!s.exec.calls.some((c) => c.args[0] === "worktree" && c.args[1] === "add"), "no worktree add");
   assert.ok(!s.exec.calls.some((c) => c.args[1] === "create"), "no second PR");
   assert.equal(s.runs[0]!.cwd, "/repo/.worktrees/router-step-abcd1234");
   assert.deepEqual(s.repo.listAttempts(s.step.id).map((a) => a.n), [1, 2]);
@@ -202,4 +203,12 @@ test("the agent and the CI wait both get a timeout", async () => {
   await runStep(s.deps, s.step.id);
   assert.equal(s.runs[0]!.timeoutMs, AGENT_TIMEOUT_MS);
   assert.equal(s.exec.calls.find((c) => c.args[1] === "checks")!.opts?.timeoutMs, CI_TIMEOUT_MS);
+});
+
+test("a merged step removes its worktree and local branch from the repo dir", async () => {
+  const s = setup([good], ["green"]);
+  await runStep(s.deps, s.step.id);
+  const remove = s.exec.calls.find((c) => c.args[0] === "worktree" && c.args[1] === "remove")!;
+  assert.equal(remove.opts?.cwd, "/repo");
+  assert.ok(s.exec.calls.some((c) => c.args[0] === "branch" && c.args[1] === "-D"));
 });

@@ -21,6 +21,18 @@ test("builds the claude command with model, effort, json output and no session p
   assert.equal(call.opts?.cwd, "/work");
 });
 
+test("runs with minimal context: project settings only, no MCP servers, no skills, short system prompt", async () => {
+  const exec = fakeExec([{ when: () => true, reply: ok(fixture) }]);
+  await makeClaudeCode(exec).run(input);
+  const args = exec.calls[0]!.args;
+  const value = (flag: string) => args[args.indexOf(flag) + 1];
+  assert.equal(value("--setting-sources"), "project");
+  assert.ok(args.includes("--strict-mcp-config"));
+  assert.ok(args.includes("--disable-slash-commands"));
+  assert.ok(value("--system-prompt")!.length < 300);
+  assert.equal(value("--tools"), "Read,Write,Edit,Glob,Grep,Bash");
+});
+
 test("parses text, tokens and real cost from a real claude fixture", async () => {
   const r = await makeClaudeCode(fakeExec([{ when: () => true, reply: ok(fixture) }])).run(input);
   assert.equal(r.ok, true);

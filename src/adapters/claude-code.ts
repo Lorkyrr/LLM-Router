@@ -1,6 +1,11 @@
 import type { Exec } from "../exec.ts";
 import { makeCliAdapter, num, type Parsed } from "./types.ts";
 
+// Medido com o Haiku: o padrão carrega ~108k tokens por sessão (CLAUDE.md global, skills, MCPs, plugins);
+// estas flags deixam ~4k. O CLAUDE.md do projeto-alvo continua valendo (--setting-sources project).
+const SYSTEM_PROMPT = "Você é um agente de código. Faça exatamente o que o brief pede, mude só o necessário e responda curto.";
+const TOOLS = "Read,Write,Edit,Glob,Grep,Bash";
+
 export function makeClaudeCode(exec: Exec, permissionMode = "acceptEdits") {
   return makeCliAdapter(
     {
@@ -12,6 +17,11 @@ export function makeClaudeCode(exec: Exec, permissionMode = "acceptEdits") {
         "--output-format", "json",
         "--no-session-persistence",
         "--permission-mode", permissionMode,
+        "--setting-sources", "project",
+        "--strict-mcp-config",
+        "--disable-slash-commands",
+        "--system-prompt", SYSTEM_PROMPT,
+        "--tools", TOOLS,
       ],
       parse(stdout): Parsed | undefined {
         try {
