@@ -224,6 +224,8 @@ UI: não se aplica (sem interface).
 
 Tarefas 2 a 14, 16 a 28 mergeadas (PRs #1 a #5); teste ponta a ponta real passou (PR #2, Haiku, ~US$ 0,10 antes do contexto mínimo; ~4k tokens de contexto por sessão depois).
 
+Benchmark da triagem (tarefa 15, `node --import tsx test/bench-triage.ts`, 75 casos reais do effortless, Haiku low): 1ª rodada 67/75 (89%), após inverter "na dúvida escolha a mais alta" para "a mais baixa" e herdar categoria em continuações: 69/75 (92%), holdout 18/20. Uma rodada por versão (a saída do modelo varia); o prompt foi ajustado vendo os erros da 1ª rodada, então o ganho é em parte dentro da amostra. Erros restantes: subestimar análise/pesquisa não-código e "ultrathink" (cheap em vez de strong); a escalada cobre o caso.
+
 Mudanças em relação ao plano:
 - Node 26 (type stripping nativo), `tsx` ainda usado nos scripts.
 - Runner self-hosted **por repositório**, desligado por padrão: o router o liga por PR (`ci/runner-up.sh`) e `ci/runner-down.sh` só desliga e derruba o kind quando nenhum CI está ativo. `ci/ship.sh` automatiza PR → CI → merge.
@@ -232,7 +234,6 @@ Mudanças em relação ao plano:
 
 Pendente:
 - Tarefa 1 (spike do grok bot): o transporte do `relay` é um stub que sempre falha, então tudo cai no Claude.
-- Tarefa 15 (benchmark da triagem contra `judge-cases.json`, meta 90%).
 - Caminho de nuvem (`router-cloud.yml`) não funciona de ponta a ponta; `dispatch` e `findOrphans` não são chamados por ninguém.
 - Hook `UserPromptSubmit` implementado mas não registrado em `~/.claude/settings.json`.
 - Teste de dois PRs em paralelo para o cluster compartilhado.

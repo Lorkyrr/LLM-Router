@@ -19,7 +19,9 @@ Guia:
 - simple_edit (cheap): troca trivial e isolada (renomear, ajustar um valor, texto), sem afetar estrutura.
 - implementing (mid): implementar uma parte que se conecta a outras, código concorrente, testes.
 - planning, integration, full_review (strong): desenhar estrutura e dividir trabalho, refatorar, juntar partes, revisar tudo.
-Na dúvida entre duas categorias, escolha a mais alta.
+- Pergunta ou explicação sobre código, edição simples e tarefas de escritório comuns: cheap ou mid, nunca strong.
+- Mensagem curta de continuação ("continue", "next", "sim", uma escolha): herda a categoria do trabalho em andamento na conversa. Investigar causa raiz e migrações em massa são strong.
+- Na dúvida entre duas categorias, escolha a mais baixa: se falhar, a escalada sobe sozinha.
 Pedido: ${request}`;
 
 function parseAnswer(cfg: Config, text: string): Triage | null {
