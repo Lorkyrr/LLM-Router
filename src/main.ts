@@ -10,6 +10,9 @@ import { makeServer } from "./server.ts";
 import { openDb } from "./store/db.ts";
 import { makeRepo } from "./store/repo.ts";
 
+// Um runner por repositório alvo (conta pessoal não tem runner global): a instância é "owner-repo".
+const runnerInstance = process.env.ROUTER_RUNNER ?? "Lorkyrr-LLM-Router";
+
 const FLUSH_INTERVAL_MS = 5 * 60 * 1000;
 
 // Transporte do grok bot ainda indefinido (spike pendente): falhar faz o relay cair no Claude, como no caso de borda 4.
@@ -26,7 +29,7 @@ async function main() {
   const server = makeServer({
     cfg, adapters, repo, exec: realExec, runner: "self_hosted", base: "main", transport: grokBot,
     repoDir: process.env.ROUTER_REPO_DIR ?? process.cwd(),
-    lease: makeLease(realExec, { up: "ci/runner-up.sh", down: "ci/runner-down.sh" }),
+    lease: makeLease(realExec, { up: "ci/runner-up.sh", down: "ci/runner-down.sh", args: [runnerInstance] }),
   });
   await server.connect(new StdioServerTransport());
 

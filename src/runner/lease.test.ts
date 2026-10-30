@@ -33,3 +33,11 @@ test("a failed start throws and leaves nothing held", async () => {
   await lease.acquire().catch(() => {});
   assert.equal(exec.calls.length, 2, "next acquire tries again");
 });
+
+test("the instance name is passed to both scripts so each repo gets its own runner", async () => {
+  const exec = fakeExec([{ when: () => true, reply: ok() }]);
+  const lease = makeLease(exec, { up: "up", down: "down", args: ["Lorkyrr-KEngine"] });
+  await lease.acquire();
+  await lease.release();
+  assert.deepEqual(exec.calls.map((c) => c.args), [["Lorkyrr-KEngine"], ["Lorkyrr-KEngine"]]);
+});
