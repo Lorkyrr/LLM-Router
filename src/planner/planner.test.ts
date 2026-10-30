@@ -85,3 +85,43 @@ test("no strong model available marks the task waiting_quota", async () => {
   assert.equal(s.repo.getTask(s.task.id)!.status, "waiting_quota");
   assert.equal(s.calls.length, 0);
 });
+
+function quotaThenOk(okText: string) {
+  const repo = makeRepo(openDb());
+  const models: string[] = [];
+  const adapter: Adapter = {
+    async run(i) {
+      models.push(i.model);
+      if (i.model === "claude-opus-5-5") return { ok: false, text: "", usage: ZERO_USAGE, cost_usd: null, quota_exhausted: true, error: "quota" };
+      return { ok: true, text: okText, usage: ZERO_USAGE, cost_usd: null, quota_exhausted: false };
+    },
+    async ping() {
+      return { available: true, quota_state: "ok" };
+    },
+  };
+  const task = repo.insertTask({ request: "r" });
+  return { repo, models, task, adapters: { "claude-code": adapter, "grok-build": adapter } };
+}
+
+test("quota exhaustion falls back to the next strong model and marks the first unavailable", async () => {
+  const s = quotaThenOk(steps({ tier: "mid", brief: "a", depends_on: [], files: [] }));
+  const out = await plan(cfg, s.adapters, s.repo, s.task.id, { cwd: "/w" });
+  assert.deepEqual(s.models, ["claude-opus-5-5", "grok-4.7"]);
+  assert.equal(out.length, 1);
+  assert.equal(s.repo.listModels().find((m) => m.name === "opus-5-5")?.available, false);
+});
+
+test("quota exhausted on every strong model leaves the task waiting_quota", async () => {
+  const s = quotaThenOk("x");
+  const exhausted: Adapter = { run: async () => ({ ok: false, text: "", usage: ZERO_USAGE, cost_usd: null, quota_exhausted: true }), ping: async () => ({ available: false, quota_state: "exhausted" }) };
+  const out = await plan(cfg, { "claude-code": exhausted, "grok-build": exhausted }, s.repo, s.task.id, { cwd: "/w" });
+  assert.deepEqual(out, []);
+  assert.equal(s.repo.getTask(s.task.id)!.status, "waiting_quota");
+});
+
+test("planning a task that already has steps is refused", async () => {
+  const s = setup(steps({ tier: "mid", brief: "a", depends_on: [], files: [] }));
+  await plan(cfg, s.adapters, s.repo, s.task.id, { cwd: "/w" });
+  await assert.rejects(() => plan(cfg, s.adapters, s.repo, s.task.id, { cwd: "/w" }), /already has steps/);
+  assert.equal(s.repo.listSteps(s.task.id).length, 1);
+});

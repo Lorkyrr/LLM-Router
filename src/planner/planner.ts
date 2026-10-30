@@ -1,7 +1,7 @@
 import { z } from "zod";
 import { TIERS, type Config } from "../config.ts";
 import type { Adapter, AdapterName } from "../adapters/types.ts";
-import { availability } from "../catalog/check.ts";
+import { availability, markExhausted } from "../catalog/check.ts";
 import { selectModel } from "../policy/select.ts";
 import type { Repo, Step } from "../store/repo.ts";
 
@@ -65,22 +65,28 @@ export async function plan(
 ): Promise<Step[]> {
   const task = repo.getTask(taskId);
   if (!task) throw new Error(`planner: unknown task ${taskId}`);
-  const name = selectModel(cfg, "strong", availability(repo));
-  if (!name) {
-    repo.updateTask(taskId, { status: "waiting_quota" });
-    return [];
-  }
+  if (repo.listSteps(taskId).length > 0) throw new Error(`planner: task ${taskId} already has steps`);
   repo.updateTask(taskId, { status: "planning" });
-  const model = cfg.models[name]!;
 
-  for (let i = 0; i < MAX_TRIES; i++) {
+  for (let tries = 0; tries < MAX_TRIES; ) {
+    const name = selectModel(cfg, "strong", availability(repo));
+    if (!name) {
+      repo.updateTask(taskId, { status: "waiting_quota" });
+      return [];
+    }
+    const model = cfg.models[name]!;
     const r = await adapters[model.adapter].run({
       model: model.id,
       effort: cfg.phases.planning.effort,
       prompt: prompt(task.request),
       cwd: opts.cwd,
     });
+    if (!r.ok && r.quota_exhausted) {
+      markExhausted(cfg, repo, name);
+      continue;
+    }
     if (!r.ok) throw new Error(`planner: model call failed: ${r.error ?? "unknown error"}`);
+    tries++;
     const planned = parsePlan(r.text);
     if (!planned) continue;
     const deps = withFileDeps(planned);

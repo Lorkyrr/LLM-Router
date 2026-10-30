@@ -9,7 +9,9 @@ async function must(exec: Exec, cmd: string, args: string[], cwd: string): Promi
 
 export async function startBranch(exec: Exec, o: { repoDir: string; branch: string; base: string }): Promise<string> {
   const worktree = join(o.repoDir, ".worktrees", o.branch.replaceAll("/", "-"));
-  await must(exec, "git", ["worktree", "add", "-b", o.branch, worktree, o.base], o.repoDir);
+  // Parte do remoto atualizado: passos dependentes precisam enxergar o que já foi mergeado no base.
+  await must(exec, "git", ["fetch", "origin", o.base], o.repoDir);
+  await must(exec, "git", ["worktree", "add", "-b", o.branch, worktree, `origin/${o.base}`], o.repoDir);
   return worktree;
 }
 
@@ -22,7 +24,7 @@ export async function publishBranch(
   await must(exec, "git", ["add", "-A"], o.worktree);
   if (!(await must(exec, "git", ["status", "--porcelain"], o.worktree)).trim()) return { changed: false };
   await must(exec, "git", ["commit", "-m", o.title], o.worktree);
-  await must(exec, "git", ["push", "-u", "origin", o.branch], o.worktree);
+  await must(exec, "git", ["push", "-u", "--force-with-lease", "origin", o.branch], o.worktree);
   if (o.pr_number) return { changed: true, pr_number: o.pr_number };
   const out = await must(
     exec,

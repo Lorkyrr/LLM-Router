@@ -5,7 +5,8 @@ import type { Adapter, RunInput, RunResult } from "../adapters/types.ts";
 import { fakeExec, ok, fail } from "../../test/fixtures/fake-exec.ts";
 import { openDb } from "../store/db.ts";
 import { makeRepo } from "../store/repo.ts";
-import { runStep } from "./run-step.ts";
+import type { Exec } from "../exec.ts";
+import { AGENT_TIMEOUT_MS, CI_TIMEOUT_MS, runStep } from "./run-step.ts";
 
 const cfg = loadConfig(new URL("../../config/router.yaml", import.meta.url).pathname);
 const usage = { input_tokens: 10, output_tokens: 20, cache_read_tokens: 0, cache_write_tokens: 0 };
@@ -31,6 +32,7 @@ function setup(agent: RunResult[], ci: Ci[], tier: Tier = "mid", changed: boolea
   let round = 0;
   const a = (c: { args: string[] }, ...s: string[]) => s.every((x, i) => c.args[i] === x);
   const exec = fakeExec([
+    { when: (c) => a(c, "fetch"), reply: ok() },
     { when: (c) => a(c, "worktree"), reply: ok() },
     { when: (c) => a(c, "add"), reply: ok() },
     { when: (c) => a(c, "status"), reply: () => ok(changed[statuses++] === false ? "" : " M f\n") },
@@ -119,14 +121,85 @@ test("the local runner is held only while CI runs, once per attempt", async () =
   assert.deepEqual(events, ["up", "down", "up", "down"]);
 });
 
-test("the runner is released even when verification throws", async () => {
+const breakOn = (base: Exec, when: (cmd: string, args: string[]) => boolean, msg: string): Exec =>
+  async (cmd, args, opts) => {
+    if (when(cmd, args)) throw new Error(msg);
+    return base(cmd, args, opts);
+  };
+
+test("an exception in verification releases the runner and fails the step with the attempt closed", async () => {
   const s = setup([good], ["green"]);
   const events: string[] = [];
   const lease = { acquire: async () => void events.push("up"), release: async () => void events.push("down") };
-  const exec = fakeExec([
-    { when: (c) => c.args[0] === "pr" && c.args[1] === "view", reply: () => { throw new Error("gh exploded"); } },
-    { when: () => true, reply: ok("https://github.com/o/r/pull/5 M f") },
-  ]);
-  await assert.rejects(() => runStep({ ...s.deps, lease, exec }, s.step.id), /gh exploded/);
+  const exec = breakOn(s.deps.exec, (c, a) => c === "gh" && a[0] === "pr" && a[1] === "view", "gh exploded");
+  const r = await runStep({ ...s.deps, lease, exec }, s.step.id);
+  assert.deepEqual(r, { status: "failed", attempts: 1, reason: "gh exploded" });
   assert.deepEqual(events, ["up", "down"]);
+  const [a] = s.repo.listAttempts(s.step.id);
+  assert.ok(a!.finished_at);
+  assert.equal(a!.failure_reason, "gh exploded");
+  assert.equal(a!.est_cost_usd, 0.05, "tokens already spent are still recorded");
+  assert.equal(s.repo.getStep(s.step.id)!.status, "failed");
+});
+
+test("an adapter that throws fails the step and closes the attempt", async () => {
+  const s = setup([good], ["green"]);
+  const adapter: Adapter = { run: async () => { throw new Error("spawn EAGAIN"); }, ping: async () => ({ available: true, quota_state: "ok" }) };
+  const r = await runStep({ ...s.deps, adapters: { "claude-code": adapter, "grok-build": adapter } }, s.step.id);
+  assert.deepEqual(r, { status: "failed", attempts: 1, reason: "spawn EAGAIN" });
+  const [a] = s.repo.listAttempts(s.step.id);
+  assert.ok(a!.finished_at);
+  assert.equal(a!.failure_reason, "spawn EAGAIN");
+  assert.equal(s.repo.getStep(s.step.id)!.status, "failed");
+});
+
+test("exceptions from publishing or from the lease also fail the step instead of leaving it running", async () => {
+  const p = setup([good], ["green"]);
+  const exec = breakOn(p.deps.exec, (c, a) => c === "git" && a[0] === "push", "push denied");
+  assert.deepEqual(await runStep({ ...p.deps, exec }, p.step.id), { status: "failed", attempts: 1, reason: "push denied" });
+  assert.ok(p.repo.listAttempts(p.step.id)[0]!.finished_at);
+
+  const l = setup([good], ["green"]);
+  const lease = { acquire: async () => { throw new Error("runner failed to start: x"); }, release: async () => { throw new Error("must not release"); } };
+  const r = await runStep({ ...l.deps, lease }, l.step.id);
+  assert.equal(r.status, "failed");
+  assert.ok(l.repo.listAttempts(l.step.id)[0]!.finished_at);
+  assert.equal(l.repo.getStep(l.step.id)!.status, "failed");
+});
+
+test("startBranch failing marks the step failed with no branch recorded", async () => {
+  const s = setup([good], ["green"]);
+  const exec = breakOn(s.deps.exec, (c, a) => c === "git" && a[0] === "worktree", "worktree exists");
+  const r = await runStep({ ...s.deps, exec }, s.step.id);
+  assert.deepEqual(r, { status: "failed", attempts: 0, reason: "worktree exists" });
+  assert.equal(s.repo.getStep(s.step.id)!.status, "failed");
+  assert.equal(s.repo.getStep(s.step.id)!.branch, null);
+  assert.equal(s.runs.length, 0);
+});
+
+test("a step already done is not executed again", async () => {
+  const s = setup([good], ["green"]);
+  assert.equal((await runStep(s.deps, s.step.id)).status, "done");
+  const calls = s.exec.calls.length;
+  assert.deepEqual(await runStep(s.deps, s.step.id), { status: "done", attempts: 1 });
+  assert.equal(s.exec.calls.length, calls);
+  assert.equal(s.runs.length, 1);
+});
+
+test("a step that already has a branch reuses its worktree and PR and keeps attempt numbering", async () => {
+  const s = setup([good], ["green"]);
+  s.repo.updateStep(s.step.id, { status: "failed", branch: "router/step-abcd1234", pr_number: 5 });
+  s.repo.insertAttempt({ step_id: s.step.id, n: 1, adapter: "claude-code", model: "sonnet-5-5", tier: "mid", effort: "medium", runner: "hosted" });
+  assert.deepEqual(await runStep(s.deps, s.step.id), { status: "done", attempts: 2 });
+  assert.ok(!s.exec.calls.some((c) => c.args[0] === "worktree"), "no worktree add");
+  assert.ok(!s.exec.calls.some((c) => c.args[1] === "create"), "no second PR");
+  assert.equal(s.runs[0]!.cwd, "/repo/.worktrees/router-step-abcd1234");
+  assert.deepEqual(s.repo.listAttempts(s.step.id).map((a) => a.n), [1, 2]);
+});
+
+test("the agent and the CI wait both get a timeout", async () => {
+  const s = setup([good], ["green"]);
+  await runStep(s.deps, s.step.id);
+  assert.equal(s.runs[0]!.timeoutMs, AGENT_TIMEOUT_MS);
+  assert.equal(s.exec.calls.find((c) => c.args[1] === "checks")!.opts?.timeoutMs, CI_TIMEOUT_MS);
 });

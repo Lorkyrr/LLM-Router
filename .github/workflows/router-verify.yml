@@ -18,9 +18,20 @@ jobs:
       # Comando explícito (não o script do package.json): a base pode ainda não ter o test:tap.
       # Base estável: o último estado da branch alvo. Falha que já existia lá não bloqueia o PR.
       - name: Test stable base
+        env:
+          BASE_REF: ${{ github.base_ref }}
         run: |
-          git worktree add ../base "origin/${{ github.base_ref }}"
-          (cd ../base && npm ci && node --import tsx --test --test-reporter=tap "src/**/*.test.ts" "hooks/**/*.test.ts" > "$RUNNER_TEMP/base.tap" || true)
+          BASE_DIR="$RUNNER_TEMP/base"
+          git worktree remove -f "$BASE_DIR" 2>/dev/null || rm -rf "$BASE_DIR"
+          git worktree prune
+          : > "$RUNNER_TEMP/base.tap"
+          git worktree add "$BASE_DIR" "origin/$BASE_REF"
+          # npm ci falhando no base é problema de infraestrutura, não regressão: base.tap fica vazio (= sem baseline).
+          if (cd "$BASE_DIR" && npm ci); then
+            (cd "$BASE_DIR" && node --import tsx --test --test-reporter=tap "src/**/*.test.ts" "hooks/**/*.test.ts" > "$RUNNER_TEMP/base.tap" || true)
+          else
+            echo "::warning::npm ci failed on base origin/$BASE_REF (infra problem, not a PR regression); running without baseline"
+          fi
       - name: Test PR
         run: node --import tsx --test --test-reporter=tap "src/**/*.test.ts" "hooks/**/*.test.ts" "ci/**/*.test.ts" | tee "$RUNNER_TEMP/pr.tap" || true
       - name: Compare against base

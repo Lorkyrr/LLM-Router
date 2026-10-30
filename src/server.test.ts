@@ -105,3 +105,25 @@ test("check_models records availability and relay falls back when the bot is dow
   assert.ok(models.every((m: { available: boolean }) => m.available));
   assert.deepEqual((await call("relay", { body: "oi" })).body, { channel: "claude", delivered: false });
 });
+
+test("route on a non-strong tier creates the single step that run_plan executes", async () => {
+  const { call, repo } = await connect(['{"phase":"simple_edit","tier":"cheap"}']);
+  const { body } = await call("route", { request: "renomeia" });
+  const steps = repo.listSteps(body.task_id);
+  assert.equal(steps.length, 1);
+  assert.deepEqual([steps[0]!.seq, steps[0]!.brief, steps[0]!.tier, steps[0]!.depends_on, steps[0]!.files], [1, "renomeia", "cheap", [], []]);
+  const strong = await call("route", { request: "x", override_tier: "strong" });
+  assert.equal(repo.listSteps(strong.body.task_id).length, 0);
+});
+
+test("run_plan refuses a task with no steps and plan refuses to duplicate steps", async () => {
+  const { call, repo } = await connect([JSON.stringify({ steps: [{ tier: "mid", brief: "a", depends_on: [], files: [] }] })]);
+  const task = repo.insertTask({ request: "r" });
+  const r = await call("run_plan", { task_id: task.id });
+  assert.equal(r.error, true);
+  assert.match(r.body, /no steps/);
+  assert.equal((await call("plan", { task_id: task.id })).error, false);
+  const again = await call("plan", { task_id: task.id });
+  assert.equal(again.error, true);
+  assert.match(again.body, /already has steps/);
+});

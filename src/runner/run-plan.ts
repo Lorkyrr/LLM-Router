@@ -5,6 +5,12 @@ export type PlanOutcome = { done: number[]; failed: number[]; blocked: number[];
 type Result = "done" | "failed" | "waiting_quota" | "blocked";
 
 export async function runPlan(d: StepDeps, taskId: string): Promise<PlanOutcome> {
+  const task = d.repo.getTask(taskId);
+  if (!task) throw new Error(`run-plan: unknown task ${taskId}`);
+  // Sem await entre checar e marcar: duas chamadas na mesma task não passam as duas.
+  if (task.status === "running") throw new Error(`run-plan: task ${taskId} is already running`);
+  d.repo.updateTask(taskId, { status: "running" });
+
   const steps = d.repo.listSteps(taskId);
   const byId = new Map(steps.map((s) => [s.id, s]));
 
@@ -29,14 +35,17 @@ export async function runPlan(d: StepDeps, taskId: string): Promise<PlanOutcome>
         if (!schedulable.has(s.id)) return "blocked";
         const deps = await Promise.all(s.depends_on.map((id) => start(byId.get(id) as Step)));
         if (deps.some((r) => r !== "done")) return "blocked";
-        return (await runStep(d, s.id)).status;
+        // runStep já converte exceções em `failed`; isto cobre o que escapa dele (ex.: banco), para um passo não derrubar os outros.
+        return await runStep(d, s.id).then((o) => o.status, (e) => {
+          console.error(`run-plan: step ${s.id}:`, e);
+          return "failed";
+        });
       })();
       results.set(s.id, p);
     }
     return p;
   };
 
-  d.repo.updateTask(taskId, { status: "running" });
   let settled: Result[];
   try {
     settled = await Promise.all(steps.map(start));

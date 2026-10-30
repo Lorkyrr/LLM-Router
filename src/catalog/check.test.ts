@@ -4,7 +4,7 @@ import { loadConfig } from "../config.ts";
 import { openDb } from "../store/db.ts";
 import { makeRepo } from "../store/repo.ts";
 import type { Adapter, Availability } from "../adapters/types.ts";
-import { availability, checkModels } from "./check.ts";
+import { availability, checkModels, recheckUnavailable } from "./check.ts";
 
 const cfg = loadConfig(new URL("../../config/router.yaml", import.meta.url).pathname);
 const stub = (answer: (model: string) => Availability): Adapter => ({
@@ -39,4 +39,17 @@ test("a ping that throws marks the model unavailable instead of failing the whol
   const boom: Adapter = { run: async () => { throw new Error("x"); }, ping: async () => { throw new Error("spawn failed"); } };
   await checkModels(cfg, { "claude-code": boom, "grok-build": boom }, repo);
   assert.ok(repo.listModels().every((m) => m.available === false && m.quota_state === "error"));
+});
+
+test("recheckUnavailable pings only unavailable models and restores the ones that answer", async () => {
+  const repo = makeRepo(openDb());
+  repo.upsertModel({ name: "haiku-5-5", adapter: "claude-code", tier: "cheap", preference: 0 });
+  repo.setAvailability("haiku-5-5", { available: false, quota_state: "exhausted" });
+  repo.upsertModel({ name: "opus-5-5", adapter: "claude-code", tier: "strong", preference: 0 });
+  repo.setAvailability("opus-5-5", { available: true, quota_state: "ok" });
+  const pinged: string[] = [];
+  const adapter = stub((m) => { pinged.push(m); return { available: true, quota_state: "ok" }; });
+  await recheckUnavailable(cfg, { "claude-code": adapter, "grok-build": adapter }, repo);
+  assert.deepEqual(pinged, ["claude-haiku-5-5"]);
+  assert.equal(repo.listModels().find((m) => m.name === "haiku-5-5")?.available, true);
 });
