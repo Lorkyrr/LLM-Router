@@ -1,0 +1,57 @@
+import { test } from "node:test";
+import assert from "node:assert/strict";
+import { fakeExec, ok, fail } from "../../test/fixtures/fake-exec.ts";
+import { startBranch, publishBranch } from "./branch.ts";
+
+const is = (cmd: string, ...sub: string[]) => (c: { cmd: string; args: string[] }) =>
+  c.cmd === cmd && sub.every((s, i) => c.args[i] === s);
+
+test("startBranch creates a worktree on a new branch off the base", async () => {
+  const exec = fakeExec([{ when: is("git", "worktree"), reply: ok() }]);
+  const wt = await startBranch(exec, { repoDir: "/repo", branch: "router/step-1", base: "main" });
+  assert.equal(wt, "/repo/.worktrees/router-step-1");
+  assert.deepEqual(exec.calls[0]!.args, ["worktree", "add", "-b", "router/step-1", wt, "main"]);
+  assert.equal(exec.calls[0]!.opts?.cwd, "/repo");
+});
+
+test("startBranch throws with git's message on failure", async () => {
+  const exec = fakeExec([{ when: is("git", "worktree"), reply: fail("já existe") }]);
+  await assert.rejects(() => startBranch(exec, { repoDir: "/repo", branch: "b", base: "main" }), /já existe/);
+});
+
+test("publishBranch commits, pushes and opens the PR, returning its number", async () => {
+  const exec = fakeExec([
+    { when: is("git", "add"), reply: ok() },
+    { when: is("git", "status"), reply: ok(" M src/a.ts\n") },
+    { when: is("git", "commit"), reply: ok() },
+    { when: is("git", "push"), reply: ok() },
+    { when: is("gh", "pr", "create"), reply: ok("https://github.com/o/r/pull/42\n") },
+  ]);
+  const r = await publishBranch(exec, { worktree: "/wt", branch: "b", base: "main", title: "t", body: "corpo" });
+  assert.deepEqual(r, { changed: true, pr_number: 42 });
+  const create = exec.calls.find((c) => c.cmd === "gh")!;
+  for (const [flag, v] of [["--title", "t"], ["--body", "corpo"], ["--base", "main"], ["--head", "b"]]) {
+    assert.equal(create.args[create.args.indexOf(flag!) + 1], v);
+  }
+  assert.ok(exec.calls.every((c) => c.opts?.cwd === "/wt"));
+});
+
+test("publishBranch with no changes does not commit, push or open a PR", async () => {
+  const exec = fakeExec([
+    { when: is("git", "add"), reply: ok() },
+    { when: is("git", "status"), reply: ok("") },
+  ]);
+  const r = await publishBranch(exec, { worktree: "/wt", branch: "b", base: "main", title: "t", body: "" });
+  assert.deepEqual(r, { changed: false });
+  assert.equal(exec.calls.length, 2);
+});
+
+test("publishBranch surfaces a failing push", async () => {
+  const exec = fakeExec([
+    { when: is("git", "add"), reply: ok() },
+    { when: is("git", "status"), reply: ok(" M a\n") },
+    { when: is("git", "commit"), reply: ok() },
+    { when: is("git", "push"), reply: fail("sem permissão") },
+  ]);
+  await assert.rejects(() => publishBranch(exec, { worktree: "/wt", branch: "b", base: "main", title: "t", body: "" }), /sem permissão/);
+});
