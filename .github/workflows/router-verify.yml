@@ -14,6 +14,7 @@ jobs:
         with:
           node-version: 26
       - run: npm ci
+      # O cluster fica de pé entre PRs; ci/runner-down.sh o derruba quando não há mais CI em andamento.
       - run: ci/kind-up.sh
       # Comando explícito (não o script do package.json): a base pode ainda não ter o test:tap.
       # Base estável: o último estado da branch alvo. Falha que já existia lá não bloqueia o PR.
@@ -37,5 +38,3 @@ jobs:
       - name: Compare against base
         run: node ci/compare-baseline.ts "$RUNNER_TEMP/base.tap" "$RUNNER_TEMP/pr.tap"
       - run: npm run typecheck
-      - run: ci/kind-down.sh
-        if: always()
