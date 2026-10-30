@@ -6,3 +6,4 @@ node_modules/
 router.db*
 .handoff/
 graphify-out/
+test/bench-triage.last.json
