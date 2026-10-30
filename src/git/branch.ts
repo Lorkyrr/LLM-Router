@@ -17,12 +17,13 @@ export type Published = { changed: false } | { changed: true; pr_number: number 
 
 export async function publishBranch(
   exec: Exec,
-  o: { worktree: string; branch: string; base: string; title: string; body: string },
+  o: { worktree: string; branch: string; base: string; title: string; body: string; pr_number?: number },
 ): Promise<Published> {
   await must(exec, "git", ["add", "-A"], o.worktree);
   if (!(await must(exec, "git", ["status", "--porcelain"], o.worktree)).trim()) return { changed: false };
   await must(exec, "git", ["commit", "-m", o.title], o.worktree);
   await must(exec, "git", ["push", "-u", "origin", o.branch], o.worktree);
+  if (o.pr_number) return { changed: true, pr_number: o.pr_number };
   const out = await must(
     exec,
     "gh",
