@@ -1,3 +1,5 @@
+import { homedir } from "node:os";
+import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 
 // Sem FK e sem apagar linhas: o histórico alimenta o relatório de custo; o fim de vida é o campo status.
@@ -74,6 +76,9 @@ CREATE TABLE IF NOT EXISTS messages (
 );
 CREATE INDEX IF NOT EXISTS idx_messages_undelivered ON messages(created_at) WHERE delivered = 0;
 `;
+
+// Servidor MCP e hook compartilham o mesmo arquivo, qualquer que seja o projeto aberto.
+export const defaultDbPath = (): string => join(homedir(), ".local/share/llm-router/router.db");
 
 export function openDb(target: string | DatabaseSync = ":memory:"): DatabaseSync {
   const db = typeof target === "string" ? new DatabaseSync(target) : target;

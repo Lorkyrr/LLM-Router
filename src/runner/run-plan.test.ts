@@ -38,6 +38,7 @@ function setup(agent: (brief: string) => RunResult = () => good) {
   const exec = fakeExec([
     { when: (c) => a(c, "fetch"), reply: ok() },
     { when: (c) => a(c, "worktree"), reply: ok() },
+    { when: (c) => a(c, "branch"), reply: ok() },
     { when: (c) => a(c, "add"), reply: ok() },
     { when: (c) => a(c, "status"), reply: ok(" M f\n") },
     { when: (c) => a(c, "commit"), reply: ok() },
