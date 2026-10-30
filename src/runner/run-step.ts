@@ -5,6 +5,7 @@ import type { Exec } from "../exec.ts";
 import { publishBranch, startBranch } from "../git/branch.ts";
 import { estimateCost } from "../policy/cost.ts";
 import { stepFor } from "../policy/escalate.ts";
+import type { Lease } from "./lease.ts";
 import { selectModel } from "../policy/select.ts";
 import type { Repo, Runner } from "../store/repo.ts";
 import { verifyAndMerge } from "../verify/ci.ts";
@@ -17,6 +18,7 @@ export type StepDeps = {
   repoDir: string;
   base: string;
   runner: Runner;
+  lease?: Lease;
 };
 export type StepOutcome =
   | { status: "done"; attempts: number }
@@ -93,7 +95,11 @@ export async function runStep(d: StepDeps, stepId: string): Promise<StepOutcome>
     prNumber = pub.pr_number;
     repo.updateStep(stepId, { pr_number: prNumber });
 
-    const verdict = await verifyAndMerge(d.exec, { cwd: worktree, pr: prNumber, deleteBranch: cfg.verify.delete_branch });
+    // O runner local só fica ligado enquanto o CI deste PR roda.
+    await d.lease?.acquire();
+    const verdict = await verifyAndMerge(d.exec, { cwd: worktree, pr: prNumber, deleteBranch: cfg.verify.delete_branch }).finally(
+      () => d.lease?.release(),
+    );
     if (verdict.result === "merged") {
       repo.finishAttempt(attempt.id, { ...usage, ci_result: "merged" });
       repo.updateStep(stepId, { status: "done" });

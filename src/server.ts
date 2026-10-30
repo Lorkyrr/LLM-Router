@@ -9,6 +9,7 @@ import { plan } from "./planner/planner.ts";
 import { strongBaseline } from "./policy/cost.ts";
 import { selectModel } from "./policy/select.ts";
 import { runPlan } from "./runner/run-plan.ts";
+import type { Lease } from "./runner/lease.ts";
 import type { Runner, Repo } from "./store/repo.ts";
 import { triage } from "./triage/triage.ts";
 
@@ -21,6 +22,7 @@ export type Ctx = {
   base: string;
   runner: Runner;
   transport: Transport;
+  lease?: Lease;
 };
 
 const reply = (value: unknown) => ({ content: [{ type: "text" as const, text: JSON.stringify(value) }] });
@@ -40,7 +42,7 @@ function tool<T>(fn: (args: T) => Promise<unknown>) {
 export function makeServer(ctx: Ctx): McpServer {
   const { cfg, repo } = ctx;
   const server = new McpServer({ name: "llm-router", version: "0.1.0" });
-  const stepDeps = { cfg, adapters: ctx.adapters, repo, exec: ctx.exec, repoDir: ctx.repoDir, base: ctx.base, runner: ctx.runner };
+  const stepDeps = { cfg, adapters: ctx.adapters, repo, exec: ctx.exec, repoDir: ctx.repoDir, base: ctx.base, runner: ctx.runner, lease: ctx.lease };
   const mustTask = (id: string) => {
     const t = repo.getTask(id);
     if (!t) throw new Error(`unknown task ${id}`);
