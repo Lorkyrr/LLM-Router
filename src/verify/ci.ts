@@ -5,16 +5,37 @@ export type Verdict = { result: "merged" } | { result: "failed"; reason: string 
 const NO_CHECKS = /no checks reported/i;
 const NO_CHECKS_RETRIES = 6;
 const NO_CHECKS_POLL_MS = 5000;
-const CONFLICT = /conflict|not mergeable|cannot be rebased/i;
+// "base branch policy prohibits the merge" (revisão obrigatória etc.) não é conflito: só conflito real de merge.
+const CONFLICT = /merge conflict|conflicts|cannot be rebased/i;
+const LOG_TAIL_LINES = 60;
+const RUN_ID = /\/runs\/(\d+)/;
+const conflictReason = (base: string) => `merge conflict: rebase no origin/${base}, resolva os conflitos e dê push`;
+
+// Melhor esforço: o reason já tem a tabela de checks; o log do job falho só enriquece.
+async function failedLogTail(exec: Exec, cwd: string, pr: string): Promise<string> {
+  const list = await exec("gh", ["pr", "checks", pr, "--json", "bucket,link"], { cwd });
+  if (list.code !== 0) return "";
+  let runId: string | undefined;
+  try {
+    const checks = JSON.parse(list.stdout) as { bucket: string; link: string }[];
+    runId = checks.find((c) => c.bucket === "fail")?.link.match(RUN_ID)?.[1];
+  } catch {
+    return "";
+  }
+  if (!runId) return "";
+  const log = await exec("gh", ["run", "view", runId, "--log-failed"], { cwd });
+  return log.code === 0 ? log.stdout.trim().split("\n").slice(-LOG_TAIL_LINES).join("\n") : "";
+}
 
 export async function verifyAndMerge(
   exec: Exec,
-  o: { cwd: string; pr: number; deleteBranch: boolean; timeoutMs?: number; pollMs?: number },
+  o: { cwd: string; pr: number; deleteBranch: boolean; branch?: string; base?: string; timeoutMs?: number; pollMs?: number },
 ): Promise<Verdict> {
   const pr = String(o.pr);
+  const base = o.base ?? "main";
   const view = await exec("gh", ["pr", "view", pr, "--json", "mergeable"], { cwd: o.cwd });
   if (view.code === 0 && JSON.parse(view.stdout).mergeable === "CONFLICTING") {
-    return { result: "conflict", reason: "PR conflicts with the base branch" };
+    return { result: "conflict", reason: conflictReason(base) };
   }
 
   // `--watch` bloqueia até os checks terminarem; exit 0 = verde, 1 = vermelho, 8 = ainda pendente (timeout).
@@ -25,11 +46,18 @@ export async function verifyAndMerge(
     checks = await exec("gh", ["pr", "checks", pr, "--watch"], { cwd: o.cwd, timeoutMs: o.timeoutMs });
   }
   if (checks.code !== 0) {
-    return { result: "failed", reason: checks.stdout.trim() || checks.stderr.trim() || `gh pr checks exit ${checks.code}` };
+    const table = checks.stdout.trim() || checks.stderr.trim() || `gh pr checks exit ${checks.code}`;
+    const tail = await failedLogTail(exec, o.cwd, pr);
+    return { result: "failed", reason: tail ? `${table}\n\n--- failed job log (last ${LOG_TAIL_LINES} lines) ---\n${tail}` : table };
   }
 
-  const merge = await exec("gh", ["pr", "merge", pr, "--rebase", ...(o.deleteBranch ? ["--delete-branch"] : [])], { cwd: o.cwd });
-  if (merge.code === 0) return { result: "merged" };
+  // --delete-branch tenta dar checkout do base dentro do worktree e falha; apaga o remoto à parte.
+  const merge = await exec("gh", ["pr", "merge", pr, "--rebase"], { cwd: o.cwd });
+  if (merge.code === 0) {
+    // Melhor esforço: o merge já aconteceu, branch remoto sobrando não invalida o passo.
+    if (o.deleteBranch && o.branch) await exec("git", ["push", "origin", "--delete", o.branch], { cwd: o.cwd });
+    return { result: "merged" };
+  }
   const reason = merge.stderr.trim() || merge.stdout.trim() || `gh pr merge exit ${merge.code}`;
-  return { result: CONFLICT.test(reason) ? "conflict" : "failed", reason };
+  return CONFLICT.test(reason) ? { result: "conflict", reason: `${conflictReason(base)} (${reason})` } : { result: "failed", reason };
 }

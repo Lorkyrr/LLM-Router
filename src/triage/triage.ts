@@ -1,9 +1,12 @@
 import { z } from "zod";
 import { PHASES, TIERS, type Config, type Effort, type Phase, type Tier } from "../config.ts";
 import type { Adapter, AdapterName } from "../adapters/types.ts";
+import { availability, markExhausted } from "../catalog/check.ts";
+import { selectModel } from "../policy/select.ts";
+import type { Repo } from "../store/repo.ts";
 
 export type Triage = { phase: Phase; tier: Tier; effort: Effort };
-export type TriageOptions = { cwd: string; overrideTier?: Tier };
+export type TriageOptions = { cwd: string; repo: Repo; overrideTier?: Tier };
 
 const MAX_TRIES = 2;
 const answer = z.object({ phase: z.enum(PHASES), tier: z.enum(TIERS) });
@@ -44,15 +47,24 @@ export async function triage(
     const phase = PHASES.find((p) => cfg.phases[p].tier === opts.overrideTier)!;
     return { phase, tier: opts.overrideTier, effort: cfg.phases[phase].effort };
   }
-  const model = cfg.models[cfg.triage.model]!;
-  for (let i = 0; i < MAX_TRIES; i++) {
+  for (let tries = 0; tries < MAX_TRIES; ) {
+    // cfg.triage.model é a preferência; indisponível, cai para o próximo barato.
+    const states = availability(opts.repo);
+    const name = states[cfg.triage.model]?.available !== false ? cfg.triage.model : selectModel(cfg, "cheap", states);
+    if (!name) throw new Error("triage: no cheap model available");
+    const model = cfg.models[name]!;
     const r = await adapters[model.adapter].run({
       model: model.id,
       effort: cfg.triage.effort,
       prompt: prompt(cfg, request),
       cwd: opts.cwd,
     });
+    if (!r.ok && r.quota_exhausted) {
+      markExhausted(cfg, opts.repo, name);
+      continue;
+    }
     if (!r.ok) throw new Error(`triage: model call failed: ${r.error ?? "unknown error"}`);
+    tries++;
     const parsed = parseAnswer(cfg, r.text);
     if (parsed) return parsed;
   }

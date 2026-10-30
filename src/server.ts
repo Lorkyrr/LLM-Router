@@ -53,10 +53,12 @@ export function makeServer(ctx: Ctx): McpServer {
     "route",
     { description: "Classify a request and pick tier, model and effort.", inputSchema: { request: z.string().min(1), override_tier: z.enum(TIERS).nullish() } },
     tool(async ({ request, override_tier }) => {
-      const t = await triage(cfg, ctx.adapters, request, { cwd: ctx.repoDir, overrideTier: override_tier ?? undefined });
+      const t = await triage(cfg, ctx.adapters, request, { cwd: ctx.repoDir, repo, overrideTier: override_tier ?? undefined });
       const task = repo.insertTask({ request, phase: t.phase, tier: t.tier });
       const name = selectModel(cfg, t.tier, availability(repo));
       if (!name) repo.updateTask(task.id, { status: "waiting_quota" });
+      // cheap/mid não passam pelo planner: este passo único é o que run_plan executa.
+      else if (t.tier !== "strong") repo.insertStep({ task_id: task.id, seq: 1, brief: request, tier: t.tier, depends_on: [], files: [] });
       const model = name ? cfg.models[name] : undefined;
       return {
         task_id: task.id, phase: t.phase, tier: t.tier, model: name, adapter: model?.adapter ?? null, effort: t.effort,
@@ -84,6 +86,7 @@ export function makeServer(ctx: Ctx): McpServer {
     tool(async ({ task_id }) => {
       mustTask(task_id);
       const steps = repo.listSteps(task_id);
+      if (steps.length === 0) throw new Error(`task ${task_id} has no steps: call plan first`);
       // Sem await: um plano leva minutos e o cliente MCP acompanha por `status`.
       runPlan(stepDeps, task_id).catch((e) => console.error(`run_plan ${task_id}:`, e));
       return {

@@ -36,6 +36,7 @@ function setup(agent: (brief: string) => RunResult = () => good) {
   };
   const a = (c: { args: string[] }, ...s: string[]) => s.every((x, i) => c.args[i] === x);
   const exec = fakeExec([
+    { when: (c) => a(c, "fetch"), reply: ok() },
     { when: (c) => a(c, "worktree"), reply: ok() },
     { when: (c) => a(c, "add"), reply: ok() },
     { when: (c) => a(c, "status"), reply: ok(" M f\n") },
@@ -93,4 +94,47 @@ test("a dependency on an unknown step is blocked instead of hanging", async () =
   s.mk(2, ["inexistente"]);
   assert.deepEqual(await runPlan(s.deps, s.task.id), { done: [1], failed: [], blocked: [2], waiting_quota: [] });
   assert.equal(s.repo.getTask(s.task.id)!.status, "failed");
+});
+
+test("steps already done are not run again and count as satisfied dependencies", async () => {
+  const s = setup();
+  const a = s.mk(1);
+  s.mk(2, [a.id]);
+  s.repo.updateStep(a.id, { status: "done" });
+  assert.deepEqual(await runPlan(s.deps, s.task.id), { done: [1, 2], failed: [], blocked: [], waiting_quota: [] });
+  assert.deepEqual(s.started, ["passo 2"]);
+});
+
+test("failed and waiting_quota steps are resumed on a new run", async () => {
+  const s = setup();
+  const a = s.mk(1);
+  const b = s.mk(2);
+  s.repo.updateStep(a.id, { status: "failed" });
+  s.repo.updateStep(b.id, { status: "waiting_quota" });
+  s.repo.updateTask(s.task.id, { status: "waiting_quota" });
+  assert.deepEqual(await runPlan(s.deps, s.task.id), { done: [1, 2], failed: [], blocked: [], waiting_quota: [] });
+  assert.equal(s.repo.getTask(s.task.id)!.status, "done");
+});
+
+test("a second run on a task that is already running is refused without touching it", async () => {
+  const s = setup();
+  s.mk(1);
+  const first = runPlan(s.deps, s.task.id);
+  await assert.rejects(() => runPlan(s.deps, s.task.id), /already running/);
+  assert.deepEqual((await first).done, [1]);
+  assert.deepEqual(s.started, ["passo 1"]);
+});
+
+test("a step that throws fails alone: independent steps finish and the task ends failed", async () => {
+  const s = setup((brief) => {
+    if (brief === "passo 1") throw new Error("spawn EAGAIN");
+    return good;
+  });
+  const a = s.mk(1);
+  s.mk(2, [a.id]);
+  s.mk(3);
+  assert.deepEqual(await runPlan(s.deps, s.task.id), { done: [3], failed: [1], blocked: [2], waiting_quota: [] });
+  assert.equal(s.repo.getTask(s.task.id)!.status, "failed");
+  assert.equal(s.repo.getStep(a.id)!.status, "failed");
+  assert.ok(s.repo.listAttempts(a.id)[0]!.finished_at);
 });

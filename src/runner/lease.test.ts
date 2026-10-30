@@ -41,3 +41,32 @@ test("the instance name is passed to both scripts so each repo gets its own runn
   await lease.release();
   assert.deepEqual(exec.calls.map((c) => c.args), [["Lorkyrr-KEngine"], ["Lorkyrr-KEngine"]]);
 });
+
+test("an acquire during a stop in progress waits for the stop and then starts again", async () => {
+  let openGate!: () => void;
+  const gate = new Promise<void>((r) => (openGate = r));
+  const exec = fakeExec([
+    { when: (c) => c.cmd === "down", reply: async () => (await gate, ok()) },
+    { when: () => true, reply: ok() },
+  ]);
+  const lease = makeLease(exec, { up: "up", down: "down" });
+  await lease.acquire();
+  const releasing = lease.release();
+  const acquiring = lease.acquire();
+  await new Promise((r) => setTimeout(r, 10));
+  assert.deepEqual(names(exec), ["up", "down"], "up must not run while down is in flight");
+  openGate();
+  await Promise.all([releasing, acquiring]);
+  assert.deepEqual(names(exec), ["up", "down", "up"]);
+  await lease.release();
+  assert.deepEqual(names(exec), ["up", "down", "up", "down"]);
+});
+
+test("a failing stop does not wedge later starts", async () => {
+  const exec = fakeExec([{ when: (c) => c.cmd === "down", reply: fail("busy") }, { when: () => true, reply: ok() }]);
+  const lease = makeLease(exec, { up: "up", down: "down" });
+  await lease.acquire();
+  await lease.release();
+  await lease.acquire();
+  assert.deepEqual(names(exec), ["up", "down", "up"]);
+});

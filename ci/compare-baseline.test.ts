@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { failedTests, regressions } from "./compare-baseline.ts";
+import { failedTests, hasResults, regressions } from "./compare-baseline.ts";
 
 const tap = (...lines: string[]) => lines.join("\n");
 
@@ -23,4 +23,10 @@ test("a test that passed on base and fails on the PR is a regression", () => {
 
 test("a PR run with no test results at all counts as a regression", () => {
   assert.deepEqual(regressions(tap("ok 1 - a"), "crash"), ["<no test results from the PR run>"]);
+});
+
+test("an empty base run is no baseline: every PR failure counts", () => {
+  assert.equal(hasResults(""), false);
+  assert.equal(hasResults(tap("ok 1 - a")), true);
+  assert.deepEqual(regressions("", tap("ok 1 - a", "not ok 2 - b")), ["b"]);
 });
