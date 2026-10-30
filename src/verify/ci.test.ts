@@ -48,3 +48,14 @@ test("pending checks exit code (8) is a failure with a clear reason, not a merge
   const r = await verifyAndMerge(exec, o);
   assert.equal(r.result, "failed");
 });
+
+test("checks not registered yet are polled again instead of failing the PR", async () => {
+  let n = 0;
+  const exec = fakeExec([
+    view("MERGEABLE"),
+    { when: sub("pr", "checks"), reply: () => (n++ < 2 ? { code: 1, stdout: "", stderr: "no checks reported on the 'b' branch" } : ok()) },
+    { when: sub("pr", "merge"), reply: ok() },
+  ]);
+  assert.deepEqual(await verifyAndMerge(exec, { ...o, pollMs: 0 }), { result: "merged" });
+  assert.equal(n, 3);
+});

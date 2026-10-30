@@ -5,6 +5,7 @@ import { checkModels } from "./catalog/check.ts";
 import { flush, type Transport } from "./channel/relay.ts";
 import { loadConfig } from "./config.ts";
 import { realExec } from "./exec.ts";
+import { makeLease } from "./runner/lease.ts";
 import { makeServer } from "./server.ts";
 import { openDb } from "./store/db.ts";
 import { makeRepo } from "./store/repo.ts";
@@ -25,6 +26,7 @@ async function main() {
   const server = makeServer({
     cfg, adapters, repo, exec: realExec, runner: "self_hosted", base: "main", transport: grokBot,
     repoDir: process.env.ROUTER_REPO_DIR ?? process.cwd(),
+    lease: makeLease(realExec, { up: "ci/runner-up.sh", down: "ci/runner-down.sh" }),
   });
   await server.connect(new StdioServerTransport());
 

@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
-# Instala o runner self-hosted do GitHub neste PC (CPU, como serviço systemd).
-# Uso: ci/runner-install.sh owner/repo   (precisa de `gh` autenticado com permissão de admin no repositório e de sudo)
+# Registra o runner self-hosted do GitHub neste PC (CPU) como serviço systemd de usuário, desligado.
+# Uso: ci/runner-install.sh owner/repo   (precisa de `gh` autenticado com permissão de admin no repositório )
 set -euo pipefail
 
 REPO="${1:?usage: runner-install.sh owner/repo}"
@@ -21,6 +21,17 @@ TOKEN="$(gh api -X POST "repos/${REPO}/actions/runners/registration-token" --jq 
 ./config.sh --unattended --url "https://github.com/${REPO}" --token "$TOKEN" \
   --name "$(hostname)-router" --labels "$LABELS" --replace
 
-sudo ./svc.sh install "$USER"
-sudo ./svc.sh start
-echo "runner registered with label $LABELS; check: gh api repos/${REPO}/actions/runners --jq '.runners[].status'"
+# Unidade de usuário (sem sudo) e SEM enable/start: o router liga com ci/runner-up.sh quando abre um PR.
+UNIT_DIR="$HOME/.config/systemd/user"
+mkdir -p "$UNIT_DIR"
+cat > "$UNIT_DIR/router-runner.service" <<UNIT
+[Unit]
+Description=GitHub Actions runner (router-ci), ligado sob demanda
+
+[Service]
+WorkingDirectory=$DIR
+ExecStart=$DIR/run.sh
+Restart=no
+UNIT
+systemctl --user daemon-reload
+echo "runner registered (stopped). start: ci/runner-up.sh  stop: ci/runner-down.sh"

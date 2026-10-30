@@ -7,16 +7,16 @@ import { makeRepo } from "../store/repo.ts";
 import { chooseRunner, findOrphans } from "./dispatch.ts";
 
 const cfg = loadConfig(new URL("../../config/router.yaml", import.meta.url).pathname);
-const runners = (...status: string[]) => ok(JSON.stringify({ runners: status.map((s) => ({ status: s })) }));
+const runners = (...labels: string[]) => ok(JSON.stringify({ runners: labels.map((l) => ({ status: "offline", labels: [{ name: l }] })) }));
 
-test("online self-hosted runner wins and the repo is queried through gh api", async () => {
-  const exec = fakeExec([{ when: () => true, reply: runners("offline", "online") }]);
+test("a registered router-ci runner wins even while offline and the repo is queried through gh api", async () => {
+  const exec = fakeExec([{ when: () => true, reply: runners("self-hosted", "router-ci") }]);
   assert.deepEqual(await chooseRunner(exec, cfg, { repo: "o/r", tier: "strong" }), { runner: "self_hosted", refused: false });
   assert.deepEqual(exec.calls[0]!.args, ["api", "repos/o/r/actions/runners"]);
 });
 
-test("no online runner falls back to hosted, which accepts only cloud tiers", async () => {
-  const exec = fakeExec([{ when: () => true, reply: runners("offline") }]);
+test("no router-ci runner falls back to hosted, which accepts only cloud tiers", async () => {
+  const exec = fakeExec([{ when: () => true, reply: runners("self-hosted") }]);
   assert.deepEqual(await chooseRunner(exec, cfg, { repo: "o/r", tier: "mid" }), { runner: "hosted", refused: false });
   assert.deepEqual(await chooseRunner(exec, cfg, { repo: "o/r", tier: "strong" }), { runner: "hosted", refused: true });
 });

@@ -110,3 +110,23 @@ test("cost falls back to the price table when the CLI gives none", async () => {
   await runStep(s.deps, s.step.id);
   assert.equal(s.repo.listAttempts(s.step.id)[0]!.est_cost_usd, (10 * 3 + 20 * 15) / 1e6);
 });
+
+test("the local runner is held only while CI runs, once per attempt", async () => {
+  const s = setup([good], ["red", "green"]);
+  const events: string[] = [];
+  const lease = { acquire: async () => void events.push("up"), release: async () => void events.push("down") };
+  await runStep({ ...s.deps, lease }, s.step.id);
+  assert.deepEqual(events, ["up", "down", "up", "down"]);
+});
+
+test("the runner is released even when verification throws", async () => {
+  const s = setup([good], ["green"]);
+  const events: string[] = [];
+  const lease = { acquire: async () => void events.push("up"), release: async () => void events.push("down") };
+  const exec = fakeExec([
+    { when: (c) => c.args[0] === "pr" && c.args[1] === "view", reply: () => { throw new Error("gh exploded"); } },
+    { when: () => true, reply: ok("https://github.com/o/r/pull/5 M f") },
+  ]);
+  await assert.rejects(() => runStep({ ...s.deps, lease, exec }, s.step.id), /gh exploded/);
+  assert.deepEqual(events, ["up", "down"]);
+});
