@@ -24,6 +24,8 @@ export type StepDeps = {
 };
 export type StepOutcome =
   | { status: "done"; attempts: number }
+  // staged: passou no gate local e o PR está aberto; o CI e o merge esperam o `release`.
+  | { status: "pr_open"; attempts: number }
   | { status: "failed"; attempts: number; reason: string }
   | { status: "waiting_quota"; attempts: number };
 
@@ -42,7 +44,7 @@ export async function runStep(d: StepDeps, stepId: string): Promise<StepOutcome>
   if (!step) throw new Error(`run-step: unknown step ${stepId}`);
   // Numeração continua de onde parou para a retomada de um passo failed/waiting_quota não repetir n.
   let n = repo.listAttempts(stepId).length;
-  if (step.status === "done") return { status: "done", attempts: n };
+  if (step.status === "done" || step.status === "pr_open") return { status: step.status, attempts: n };
 
   let open: { id: string; usage: Parameters<Repo["finishAttempt"]>[1] } | null = null;
   const finish = (r: Parameters<Repo["finishAttempt"]>[1]) => {
@@ -59,7 +61,25 @@ export async function runStep(d: StepDeps, stepId: string): Promise<StepOutcome>
       worktree = join(d.repoDir, ".worktrees", branch.replaceAll("/", "-"));
     } else {
       branch = `router/step-${step.id.slice(0, 8)}`;
-      worktree = await startBranch(d.exec, { repoDir: d.repoDir, branch, base: d.base, local: mode === "local" });
+      // Pré-requisito com PR aberto (staged) ainda não está no base: o passo parte do branch dele, e os demais entram por merge.
+      const stacked = step.depends_on.flatMap((id) => {
+        const dep = repo.getStep(id);
+        return dep?.status === "pr_open" && dep.branch ? [dep.branch] : [];
+      });
+      for (const b of stacked) {
+        const f = await d.exec("git", ["fetch", "origin", b], { cwd: d.repoDir });
+        if (f.code !== 0) throw new Error(`git fetch ${b} failed: ${f.stderr || f.stdout}`);
+      }
+      worktree = await startBranch(d.exec, {
+        repoDir: d.repoDir, branch, base: d.base, local: mode === "local", ...(stacked[0] ? { from: `origin/${stacked[0]}` } : {}),
+      });
+      for (const b of stacked.slice(1)) {
+        const m = await d.exec("git", ["merge", "--no-edit", `origin/${b}`], { cwd: worktree });
+        if (m.code !== 0) {
+          await d.exec("git", ["merge", "--abort"], { cwd: worktree });
+          throw new Error(`merge of prerequisite ${b} failed: ${m.stderr || m.stdout}`);
+        }
+      }
       repo.updateStep(stepId, { branch });
     }
 
@@ -141,17 +161,22 @@ export async function runStep(d: StepDeps, stepId: string): Promise<StepOutcome>
           verdict = gate;
           stage = "local_";
         } else {
-          // Estágio 2 (e o modo pr): PR + CI do GitHub + merge.
+          // Modo pr: PR + CI do GitHub + merge agora. Staged: só abre o PR; CI e merge esperam o sinal (`release`).
           const pushOpts = { worktree, branch, base: d.base, title, body: step.brief, ...(prNumber ? { pr_number: prNumber } : {}) };
           const pub = mode === "pr" ? await publishBranch(d.exec, pushOpts) : await pushBranch(d.exec, pushOpts);
           if (!pub.changed) {
             lastFailure = "agent made no changes";
-        finish({ failure_reason: lastFailure });
+            finish({ failure_reason: lastFailure });
             rung++;
             continue;
           }
           prNumber = pub.pr_number;
           repo.updateStep(stepId, { pr_number: prNumber });
+          if (mode === "staged") {
+            finish({ ci_result: "pr_open" });
+            repo.updateStep(stepId, { status: "pr_open" });
+            return { status: "pr_open", attempts: n };
+          }
 
           // O runner local só fica ligado enquanto o CI deste PR roda.
           await d.lease?.acquire();

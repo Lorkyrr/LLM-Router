@@ -1,8 +1,9 @@
 import type { Step } from "../store/repo.ts";
 import { runStep, type StepDeps } from "./run-step.ts";
 
-export type PlanOutcome = { done: number[]; failed: number[]; blocked: number[]; waiting_quota: number[] };
-type Result = "done" | "failed" | "waiting_quota" | "blocked";
+// pr_open (staged) só aparece quando há PRs esperando o `release`; para dependências conta como satisfeito (o dependente parte do branch dele).
+export type PlanOutcome = { done: number[]; failed: number[]; blocked: number[]; waiting_quota: number[]; pr_open?: number[] };
+type Result = "done" | "failed" | "waiting_quota" | "blocked" | "pr_open";
 
 export async function runPlan(d: StepDeps, taskId: string): Promise<PlanOutcome> {
   const task = d.repo.getTask(taskId);
@@ -34,7 +35,7 @@ export async function runPlan(d: StepDeps, taskId: string): Promise<PlanOutcome>
       p = (async (): Promise<Result> => {
         if (!schedulable.has(s.id)) return "blocked";
         const deps = await Promise.all(s.depends_on.map((id) => start(byId.get(id) as Step)));
-        if (deps.some((r) => r !== "done")) return "blocked";
+        if (deps.some((r) => r !== "done" && r !== "pr_open")) return "blocked";
         // runStep já converte exceções em `failed`; isto cobre o que escapa dele (ex.: banco), para um passo não derrubar os outros.
         return await runStep(d, s.id).then((o) => o.status, (e) => {
           console.error(`run-plan: step ${s.id}:`, e);
@@ -56,8 +57,9 @@ export async function runPlan(d: StepDeps, taskId: string): Promise<PlanOutcome>
 
   const seqs = (r: Result) => steps.filter((_, i) => settled[i] === r).map((s) => s.seq);
   const out: PlanOutcome = { done: seqs("done"), failed: seqs("failed"), blocked: seqs("blocked"), waiting_quota: seqs("waiting_quota") };
+  if (seqs("pr_open").length) out.pr_open = seqs("pr_open");
   // Bloqueado sem passo em espera de cota só acontece por ciclo/dependência inválida: é falha do plano.
-  const status = out.failed.length ? "failed" : out.waiting_quota.length ? "waiting_quota" : out.blocked.length ? "failed" : "done";
+  const status = out.failed.length ? "failed" : out.waiting_quota.length ? "waiting_quota" : out.blocked.length ? "failed" : out.pr_open ? "awaiting_release" : "done";
   d.repo.updateTask(taskId, { status });
   return out;
 }

@@ -2,8 +2,8 @@ import { randomUUID } from "node:crypto";
 import type { DatabaseSync, SQLInputValue, SQLOutputValue } from "node:sqlite";
 import type { Effort, Phase, Tier } from "../config.ts";
 
-export type TaskStatus = "queued" | "planning" | "running" | "done" | "failed" | "waiting_quota";
-export type StepStatus = "pending" | "running" | "done" | "failed" | "waiting_quota";
+export type TaskStatus = "queued" | "planning" | "running" | "done" | "failed" | "waiting_quota" | "awaiting_release";
+export type StepStatus = "pending" | "running" | "done" | "failed" | "waiting_quota" | "pr_open";
 export type Runner = "self_hosted" | "hosted";
 export type Channel = "grok_bot" | "claude";
 
@@ -83,6 +83,8 @@ export function makeRepo(db: DatabaseSync, now: () => string = () => new Date().
     },
     listSteps: (taskId: string): Step[] =>
       db.prepare("SELECT * FROM steps WHERE task_id = ? ORDER BY seq").all(taskId).map(toStep),
+    listStepsByStatus: (status: StepStatus): Step[] =>
+      db.prepare("SELECT * FROM steps WHERE status = ? ORDER BY created_at, seq").all(status).map(toStep),
     updateStep: (id: string, patch: Partial<Pick<Step, "branch" | "pr_number" | "status">>) => update("steps", id, patch),
 
     insertAttempt: (a: {
