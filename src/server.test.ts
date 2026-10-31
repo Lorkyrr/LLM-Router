@@ -36,7 +36,7 @@ async function connect(answers: string[], transport = async () => {}) {
   return { call, repo };
 }
 
-test("lists the six tools", async () => {
+test("lists the seven tools", async () => {
   const [a, b] = InMemoryTransport.createLinkedPair();
   const repo = makeRepo(openDb());
   const dummy = {} as never;
@@ -44,7 +44,7 @@ test("lists the six tools", async () => {
   const client = new Client({ name: "t", version: "0" });
   await client.connect(b);
   const names = (await client.listTools()).tools.map((t) => t.name).sort();
-  assert.deepEqual(names, ["check_models", "plan", "relay", "route", "run_plan", "status"]);
+  assert.deepEqual(names, ["check_models", "plan", "relay", "release", "route", "run_plan", "status"]);
 });
 
 test("route returns the spec shape and stores the task", async () => {
@@ -140,4 +140,13 @@ test("run_plan refuses a task with no steps and plan refuses to duplicate steps"
   const again = await call("plan", { task_id: task.id });
   assert.equal(again.error, true);
   assert.match(again.body, /already has steps/);
+});
+
+test("release with nothing waiting is an error; sync_only reports local state without dispatching", async () => {
+  const { call } = await connect(["{}"]);
+  const r = await call("release", {});
+  assert.equal(r.error, true);
+  assert.match(r.body, /nothing to release/);
+  const sync = await call("release", { sync_only: true });
+  assert.deepEqual(sync.body, { merged: [], closed: [], open: [] });
 });
