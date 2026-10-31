@@ -32,8 +32,8 @@ flowchart TB
   AV --> CAT
 
   Q --> AD{Adaptadores}
-  AD --> CC[claude-code] & GB[grok build]
-  AD -.fora do MVP.-> ZD[zed] & AG[antigravity] & CX[codex]
+  AD --> CC[claude-code] & GB[grok build] & CX[codex]
+  AD -.fora do MVP.-> ZD[zed] & AG[antigravity]
 
   subgraph IMP[Importadores de sessão]
     I1[JSONL do Claude]
@@ -44,7 +44,7 @@ flowchart TB
   IMP --> R
   SYNC -->|PC ligado| CLOUDSTORE[(Cópia das sessões)]
 
-  CC & GB --> BRANCH[Branch por passo e PR]
+  CC & GB & CX --> BRANCH[Branch por passo e PR]
   BRANCH --> SH
   BRANCH --> GH[GitHub Actions hospedado]
   SH & GH --> TEST{Testes no kind e cluster derrubado}
@@ -81,7 +81,7 @@ agent-router/
 
 ## Configuração de exemplo (`config/router.yaml`)
 
-Nomes de modelos são exemplos; os reais vêm do teste de disponibilidade.
+O bloco abaixo é o desenho original, não o catálogo em uso. A configuração atual está em `config/router.yaml`; preços e critérios OpenAI estão em [docs/model-policy.md](docs/model-policy.md). A disponibilidade depende da conta e do ping.
 
 ```yaml
 triage: { tier: cheap, effort: low, role: classify_only }
@@ -125,8 +125,8 @@ dispatch:
 
 ## Escopo do MVP
 
-- **Dentro:** adaptadores `claude-code` e `grok-build`, triagem, planejador, CI no kind, merge automático, modo nuvem.
-- **Fora do MVP:** adaptadores `zed`, `antigravity` e `codex`, e todos os importadores de sessão (JSONL do Claude/Grok, SQLite do zed, conversas do antigravity). Aparecem no diagrama e na estrutura como destino, não como entrega.
+- **Dentro:** adaptadores `claude-code`, `grok-build` e `codex`, triagem, planejador, CI no kind, merge automático, modo nuvem.
+- **Fora do MVP:** adaptadores `zed` e `antigravity`, e todos os importadores de sessão (JSONL do Claude/Grok, SQLite do zed, conversas do antigravity). Aparecem no diagrama e na estrutura como destino, não como entrega.
 - **Grok bot:** só ponte (canal de conversa com o usuário), nunca executa passos; não é um adaptador de execução.
 - **Categorias:** cada modelo vive em uma só categoria (ex.: `gemini-pro` só em strong); o fallback nunca desce de categoria.
 
@@ -148,4 +148,19 @@ dispatch:
 | grok build | `~/.local/bin/grok` (`-m`, `--reasoning-effort`, `-p`, `--output-format json`) | `~/.grok/sessions/<cwd>/<id>/chat_history.jsonl` |
 | zed | `~/.local/bin/zed` | `~/.local/share/zed/threads/threads.db` (SQLite) |
 | antigravity | `~/.gemini/bin/agy` | `~/.gemini/antigravity/conversations` (protobuf) |
-| codex | não instalado | — |
+| codex | `~/.local/bin/codex` (CLI 0.166.0; `exec --json --ephemeral`) | sessões efêmeras no router |
+
+## Extensão Codex (2026-10-30) e estado real
+
+- `src/adapters/codex.ts` executa Codex CLI em sandbox e normaliza JSONL. `registry.ts` reúne os três adaptadores para MCP, CLI e benchmark.
+- Luna (cheap), Sol (mid) e Astra (strong) integram o catálogo; Terra (mid especializado) fica desativado. `phases.<fase>.prefer` define Opus para planejar, Sol para implementar e Astra para integrar/revisar, com alternativas da mesma categoria. Preços Claude/OpenAI têm fonte/data; `route` expõe diretrizes do modelo selecionado.
+- Tokens de cache Codex são separados do total de entrada. Custos sem valor fornecido pelo CLI são estimados; o relatório não confirma fatura nem saldo de assinatura.
+- As seções e o diagrama anteriores descrevem também objetivos futuros: cloud ainda é esqueleto; dispatch/recuperação não estão ligados ao fluxo principal; hook apenas registra mensagens. O banco global ainda exige separação por projeto via `ROUTER_DB`.
+- O executor continua exigindo alterações Git, portanto perguntas e revisões sem alteração não têm fluxo próprio. `verify.auto_merge` ainda não controla a chamada ao merge. Não foram corrigidos nesta extensão.
+- Diretrizes de contribuição: [AGENTS.md](AGENTS.md). Operação: [README.md](README.md). Validação: [docs/e2e-smoke.md](docs/e2e-smoke.md). Documentos em `.planning/` preservam o escopo histórico do MVP.
+
+## Correção de execução e conexão
+
+`Exec` usa descritores de arquivos temporários privados e retorna a saída após o processo terminar. Isso evita stdout/stderr descartados por Node ao identificar sockets em um sandbox restrito. Recursos são limpos em sucesso, falha e timeout.
+
+O launcher `bin/router-mcp.py` usa pipes convencionais, encaminha sinais e força encerramento do grupo após cinco segundos quando necessário. O MCP foi registrado no Claude Code com caminhos absolutos e `ROUTER_CHECK_MODELS=manual`, evitando pings pagos na abertura. Handshake e chamadas MCP locais foram testados; o cliente Claude e a inferência real continuam bloqueados neste ambiente por restrições de sockets/DNS. Registro não equivale a conexão comprovada.
