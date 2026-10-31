@@ -55,13 +55,15 @@ export function makeServer(ctx: Ctx): McpServer {
     tool(async ({ request, override_tier }) => {
       const t = await triage(cfg, ctx.adapters, request, { cwd: ctx.repoDir, repo, overrideTier: override_tier ?? undefined });
       const task = repo.insertTask({ request, phase: t.phase, tier: t.tier });
-      const name = selectModel(cfg, t.tier, availability(repo));
+      const name = selectModel(cfg, t.tier, availability(repo), t.phase);
       if (!name) repo.updateTask(task.id, { status: "waiting_quota" });
       // cheap/mid não passam pelo planner: este passo único é o que run_plan executa.
       else if (t.tier !== "strong") repo.insertStep({ task_id: task.id, seq: 1, brief: request, tier: t.tier, depends_on: [], files: [] });
       const model = name ? cfg.models[name] : undefined;
       return {
         task_id: task.id, phase: t.phase, tier: t.tier, model: name, adapter: model?.adapter ?? null, effort: t.effort,
+        ...(model?.guidance ? { guidance: model.guidance } : {}),
+        ...(model?.pricing ? { pricing: model.pricing } : {}),
         next: !name ? "wait" : t.tier === "strong" ? "plan" : "run",
       };
     }),
@@ -110,6 +112,9 @@ export function makeServer(ctx: Ctx): McpServer {
           cache_read_tokens: sum("cache_read_tokens"), cache_write_tokens: sum("cache_write_tokens"),
         }),
         actual_usd: all.reduce((a, u) => a + u.est_cost_usd, 0),
+        // actual_usd é alias legado: esta soma mistura valores do CLI e estimativas.
+        recorded_or_estimated_usd: all.reduce((a, u) => a + u.est_cost_usd, 0),
+        billing_verified: false,
       };
       if (!task_id) return { cost };
       const task = mustTask(task_id);

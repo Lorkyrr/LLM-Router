@@ -48,7 +48,7 @@ function setup(agent: (brief: string) => RunResult = () => good) {
     { when: (c) => a(c, "pr", "checks"), reply: ok() },
     { when: (c) => a(c, "pr", "merge"), reply: ok() },
   ]);
-  const deps = { cfg, adapters: { "claude-code": adapter, "grok-build": adapter }, repo, exec, repoDir: "/repo", base: "main", runner: "hosted" as const };
+  const deps = { cfg, adapters: { "claude-code": adapter, "grok-build": adapter, codex: adapter }, repo, exec, repoDir: "/repo", base: "main", runner: "hosted" as const };
   return { deps, repo, task, mk, started, maxActive: () => maxActive };
 }
 

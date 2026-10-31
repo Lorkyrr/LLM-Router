@@ -3,8 +3,8 @@ import type { Effort } from "../config.ts";
 import type { Exec } from "../exec.ts";
 import type { Usage } from "../policy/cost.ts";
 
-export type AdapterName = "claude-code" | "grok-build";
-export type RunInput = { model: string; effort: Effort; prompt: string; cwd: string; timeoutMs?: number };
+export type AdapterName = "claude-code" | "grok-build" | "codex";
+export type RunInput = { model: string; effort: Effort; prompt: string; cwd: string; timeoutMs?: number; readOnly?: boolean };
 export type RunResult = {
   ok: boolean;
   text: string;
@@ -58,7 +58,7 @@ export function makeCliAdapter(spec: CliSpec, exec: Exec): Adapter {
   return {
     run,
     async ping(model) {
-      const r = await run({ model, effort: "low", prompt: PING_PROMPT, cwd: tmpdir() });
+      const r = await run({ model, effort: "low", prompt: PING_PROMPT, cwd: tmpdir(), readOnly: true, timeoutMs: 60_000 });
       return { available: r.ok, quota_state: r.ok ? "ok" : r.quota_exhausted ? "exhausted" : "error" };
     },
   };

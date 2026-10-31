@@ -41,6 +41,13 @@ test("parses text, tokens and real cost from a real claude fixture", async () =>
   assert.equal(r.cost_usd, 0.0856425);
 });
 
+test("read-only Claude jobs cannot use edit, write or shell tools", async () => {
+  const exec = fakeExec([{ when: () => true, reply: ok(fixture) }]);
+  await makeClaudeCode(exec).run({ ...input, readOnly: true });
+  const args = exec.calls[0]!.args;
+  assert.equal(args[args.indexOf("--tools") + 1], "Read,Glob,Grep");
+});
+
 test("an is_error result is not ok and carries the message", async () => {
   const body = JSON.stringify({ result: "Not logged in · Please run /login", is_error: true, total_cost_usd: 0, usage: {} });
   const r = await makeClaudeCode(fakeExec([{ when: () => true, reply: { code: 1, stdout: body, stderr: "" } }])).run(input);

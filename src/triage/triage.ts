@@ -52,7 +52,7 @@ export async function triage(
   for (let tries = 0; tries < MAX_TRIES; ) {
     // cfg.triage.model é a preferência; indisponível, cai para o próximo barato.
     const states = availability(opts.repo);
-    const name = states[cfg.triage.model]?.available !== false ? cfg.triage.model : selectModel(cfg, "cheap", states);
+    const name = cfg.models[cfg.triage.model]?.enabled && states[cfg.triage.model]?.available !== false ? cfg.triage.model : selectModel(cfg, "cheap", states);
     if (!name) throw new Error("triage: no cheap model available");
     const model = cfg.models[name]!;
     const r = await adapters[model.adapter].run({
@@ -60,6 +60,8 @@ export async function triage(
       effort: cfg.triage.effort,
       prompt: prompt(cfg, request),
       cwd: opts.cwd,
+      readOnly: true,
+      timeoutMs: 60_000,
     });
     if (!r.ok && r.quota_exhausted) {
       markExhausted(cfg, opts.repo, name);

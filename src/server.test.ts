@@ -23,7 +23,7 @@ async function connect(answers: string[], transport = async () => {}) {
     },
   };
   const server = makeServer({
-    cfg, adapters: { "claude-code": adapter, "grok-build": adapter }, repo, exec: fakeExec([]),
+    cfg, adapters: { "claude-code": adapter, "grok-build": adapter, codex: adapter }, repo, exec: fakeExec([]),
     repoDir: "/r", base: "main", runner: "hosted", transport,
   });
   const [a, b] = InMemoryTransport.createLinkedPair();
@@ -52,6 +52,7 @@ test("route returns the spec shape and stores the task", async () => {
   const { body } = await call("route", { request: "renomeia uma variável" });
   assert.deepEqual({ ...body, task_id: undefined }, {
     task_id: undefined, phase: "simple_edit", tier: "cheap", model: "haiku-5-5", adapter: "claude-code", effort: "low", next: "run",
+    guidance: cfg.models["haiku-5-5"]!.guidance, pricing: cfg.models["haiku-5-5"]!.pricing,
   });
   assert.equal(repo.getTask(body.task_id)!.tier, "cheap");
 });
@@ -93,7 +94,9 @@ test("status sums cost and the strong baseline", async () => {
   repo.finishAttempt(at.id, { input_tokens: 1_000_000, output_tokens: 0, cache_read_tokens: 0, cache_write_tokens: 0, est_cost_usd: 3 });
   const { body } = await call("status", { task_id: task.id });
   assert.equal(body.cost.actual_usd, 3);
-  assert.equal(body.cost.all_strong_baseline_usd, 5);
+  assert.equal(body.cost.recorded_or_estimated_usd, 3);
+  assert.equal(body.cost.billing_verified, false);
+  assert.equal(body.cost.all_strong_baseline_usd, 4);
   assert.equal(body.steps[0].attempts.length, 1);
   assert.equal((await call("status", {})).body.cost.actual_usd, 3);
 });
@@ -101,9 +104,20 @@ test("status sums cost and the strong baseline", async () => {
 test("check_models records availability and relay falls back when the bot is down", async () => {
   const { call } = await connect(["x"], async () => { throw new Error("offline"); });
   const models = (await call("check_models", {})).body;
-  assert.equal(models.length, 5);
-  assert.ok(models.every((m: { available: boolean }) => m.available));
+  assert.equal(models.length, Object.keys(cfg.models).length);
+  assert.ok(models.every((m: { name: string; available: boolean }) => m.available === cfg.models[m.name]!.enabled));
   assert.deepEqual((await call("relay", { body: "oi" })).body, { channel: "claude", delivered: false });
+});
+
+test("route exposes Codex guidance and price provenance on fallback", async () => {
+  const { call, repo } = await connect(["unused"]);
+  repo.upsertModel({ name: "sonnet-5-5", adapter: "claude-code", tier: "mid", preference: 0 });
+  repo.setAvailability("sonnet-5-5", { available: false, quota_state: "exhausted" });
+  const { body } = await call("route", { request: "implemente o passo", override_tier: "mid" });
+  assert.equal(body.adapter, "codex");
+  assert.equal(body.model, "gpt-6.1-sol");
+  assert.match(body.guidance, /medium/);
+  assert.equal(body.pricing.checked_at, "2026-10-30");
 });
 
 test("route on a non-strong tier creates the single step that run_plan executes", async () => {

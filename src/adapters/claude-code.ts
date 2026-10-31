@@ -21,7 +21,7 @@ export function makeClaudeCode(exec: Exec, permissionMode = "acceptEdits") {
         "--strict-mcp-config",
         "--disable-slash-commands",
         "--system-prompt", SYSTEM_PROMPT,
-        "--tools", TOOLS,
+        "--tools", i.readOnly ? "Read,Glob,Grep" : TOOLS,
       ],
       parse(stdout): Parsed | undefined {
         try {

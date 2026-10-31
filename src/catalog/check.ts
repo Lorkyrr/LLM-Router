@@ -8,6 +8,10 @@ export async function checkModels(cfg: Config, adapters: Record<AdapterName, Ada
     cfg.tiers[tier].map(async (name, preference) => {
       const m = cfg.models[name]!;
       repo.upsertModel({ name, adapter: m.adapter, tier, preference });
+      if (!m.enabled) {
+        repo.setAvailability(name, { available: false, quota_state: "disabled" });
+        return;
+      }
       try {
         const r = await adapters[m.adapter].ping(m.id);
         repo.setAvailability(name, r);
@@ -33,7 +37,7 @@ export function markExhausted(cfg: Config, repo: Repo, name: string): void {
 // Sem isto um modelo marcado `exhausted` nunca volta; pinga só os indisponíveis para custar pouco.
 export async function recheckUnavailable(cfg: Config, adapters: Record<AdapterName, Adapter>, repo: Repo): Promise<void> {
   await Promise.all(
-    repo.listModels().filter((row) => !row.available && cfg.models[row.name]).map(async ({ name }) => {
+    repo.listModels().filter((row) => !row.available && cfg.models[row.name]?.enabled).map(async ({ name }) => {
       const m = cfg.models[name]!;
       try {
         repo.setAvailability(name, await adapters[m.adapter].ping(m.id));

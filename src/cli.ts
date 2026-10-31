@@ -1,5 +1,4 @@
-import { makeClaudeCode } from "./adapters/claude-code.ts";
-import { makeGrokBuild } from "./adapters/grok-build.ts";
+import { makeAdapters } from "./adapters/registry.ts";
 import { loadConfig } from "./config.ts";
 import { realExec } from "./exec.ts";
 import { runPlan } from "./runner/run-plan.ts";
@@ -23,7 +22,7 @@ async function main(): Promise<number> {
 
   const deps = {
     cfg: loadConfig("config/router.yaml"),
-    adapters: { "claude-code": makeClaudeCode(realExec), "grok-build": makeGrokBuild(realExec) },
+    adapters: makeAdapters(realExec),
     repo,
     exec: realExec,
     repoDir: process.env.GITHUB_WORKSPACE ?? process.cwd(),

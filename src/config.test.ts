@@ -33,6 +33,32 @@ test("a valid config parses", () => {
   assert.equal(parseConfig(base()).models.haiku?.tier, "cheap");
 });
 
+test("accepts a Codex model with auditable pricing and routing guidance", () => {
+  const c = base();
+  const raw = { ...c, models: { ...c.models, sol: {
+    adapter: "codex", id: "gpt-6.1-sol", tier: "mid", enabled: false,
+    price: { input: 2, output: 10, cache_read: 0.1, cache_write: 2.5 },
+    pricing: { source: "https://developers.openai.com/api/docs/models/gpt-6.1-sol", checked_at: "2026-10-30", basis: "standard_short_context" },
+    guidance: "Implement planned steps at medium effort; escalate on evidence.",
+  } }, tiers: { ...c.tiers, mid: ["sonnet", "sol"] } };
+  const parsed = parseConfig(raw).models.sol!;
+  assert.equal(parsed.adapter, "codex");
+  assert.equal(parsed.enabled, false);
+  assert.equal(parsed.pricing?.checked_at, "2026-10-30");
+  assert.match(parsed.guidance!, /medium/);
+});
+
+test("rejects negative token prices", () => {
+  const c = base();
+  c.models.haiku.price.input = -1;
+  assert.throws(() => parseConfig(c));
+});
+
+test("rejects a phase preference that references a model from another tier", () => {
+  const c = base();
+  assert.throws(() => parseConfig({ ...c, phases: { ...c.phases, implementing: { ...c.phases.implementing, prefer: ["opus"] } } }), /prefer/);
+});
+
 test("config/router.yaml in the repo is valid", () => {
   const cfg = loadConfig(new URL("../config/router.yaml", import.meta.url).pathname);
   assert.ok(cfg.tiers.strong.length > 0);

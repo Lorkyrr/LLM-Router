@@ -8,7 +8,7 @@ const usage = { input_tokens: 1_000_000, output_tokens: 1_000_000, cache_read_to
 
 test("estimateCost sums the four token kinds at the model price", () => {
   const haiku = cfg.models["haiku-5-5"]!.price;
-  assert.equal(estimateCost(haiku, usage), 1 + 5 + 0.1 + 1.25);
+  assert.equal(estimateCost(haiku, usage), 0.1 + 0.5 + 0.01 + 0.125);
 });
 
 test("strongBaseline prices the same usage at the first strong model", () => {

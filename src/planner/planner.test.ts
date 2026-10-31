@@ -22,7 +22,7 @@ function setup(...texts: string[]) {
     },
   };
   const task = repo.insertTask({ request: "feature em 3 partes" });
-  return { repo, calls, task, adapters: { "claude-code": adapter, "grok-build": adapter } };
+  return { repo, calls, task, adapters: { "claude-code": adapter, "grok-build": adapter, codex: adapter } };
 }
 const steps = (...s: object[]) => JSON.stringify({ steps: s });
 
@@ -100,13 +100,13 @@ function quotaThenOk(okText: string) {
     },
   };
   const task = repo.insertTask({ request: "r" });
-  return { repo, models, task, adapters: { "claude-code": adapter, "grok-build": adapter } };
+  return { repo, models, task, adapters: { "claude-code": adapter, "grok-build": adapter, codex: adapter } };
 }
 
 test("quota exhaustion falls back to the next strong model and marks the first unavailable", async () => {
   const s = quotaThenOk(steps({ tier: "mid", brief: "a", depends_on: [], files: [] }));
   const out = await plan(cfg, s.adapters, s.repo, s.task.id, { cwd: "/w" });
-  assert.deepEqual(s.models, ["claude-opus-5-5", "grok-4.7"]);
+  assert.deepEqual(s.models, ["claude-opus-5-5", "gpt-6-astra"]);
   assert.equal(out.length, 1);
   assert.equal(s.repo.listModels().find((m) => m.name === "opus-5-5")?.available, false);
 });
@@ -114,7 +114,7 @@ test("quota exhaustion falls back to the next strong model and marks the first u
 test("quota exhausted on every strong model leaves the task waiting_quota", async () => {
   const s = quotaThenOk("x");
   const exhausted: Adapter = { run: async () => ({ ok: false, text: "", usage: ZERO_USAGE, cost_usd: null, quota_exhausted: true }), ping: async () => ({ available: false, quota_state: "exhausted" }) };
-  const out = await plan(cfg, { "claude-code": exhausted, "grok-build": exhausted }, s.repo, s.task.id, { cwd: "/w" });
+  const out = await plan(cfg, { "claude-code": exhausted, "grok-build": exhausted, codex: exhausted }, s.repo, s.task.id, { cwd: "/w" });
   assert.deepEqual(out, []);
   assert.equal(s.repo.getTask(s.task.id)!.status, "waiting_quota");
 });
