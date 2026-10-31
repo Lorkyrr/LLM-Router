@@ -32,7 +32,7 @@ async function main(): Promise<number> {
 
   const out = await runPlan(deps, taskId);
   console.log(JSON.stringify(out));
-  return out.failed.length + out.blocked.length + out.waiting_quota.length ? 1 : 0;
+  return out.failed.length + out.blocked.length + out.waiting_quota.length ? 1 : 0 // pr_open é sucesso: o release é outro sinal;
 }
 
 if (import.meta.main) {

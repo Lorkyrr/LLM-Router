@@ -139,3 +139,18 @@ test("a step that throws fails alone: independent steps finish and the task ends
   assert.equal(s.repo.getStep(a.id)!.status, "failed");
   assert.ok(s.repo.listAttempts(a.id)[0]!.finished_at);
 });
+
+test("staged: PRs left open count as satisfied prerequisites and the task waits for the release", async () => {
+  const s = setup();
+  const one = s.mk(1);
+  s.mk(2, [one.id]);
+  const exec = fakeExec([
+    { when: (c) => c.cmd === "gh" && c.args[1] === "create", reply: ok("https://github.com/o/r/pull/5") },
+    { when: () => true, reply: ok(" M f\n") },
+  ]);
+  const staged = { ...cfg, verify: { ...cfg.verify, mode: "staged" as const, local: { cmds: [["npm", "test"]], timeout_s: 60 } } };
+  const out = await runPlan({ ...s.deps, cfg: staged, exec }, s.task.id);
+  assert.deepEqual(out, { done: [], failed: [], blocked: [], waiting_quota: [], pr_open: [1, 2] });
+  assert.equal(s.repo.getTask(s.task.id)!.status, "awaiting_release");
+  assert.equal(exec.calls.find((c) => c.args[0] === "worktree" && c.args[1] === "add" && c.args.includes("origin/router/step-" + one.id.slice(0, 8)))?.args[0], "worktree");
+});

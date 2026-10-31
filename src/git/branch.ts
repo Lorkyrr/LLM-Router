@@ -7,12 +7,12 @@ async function must(exec: Exec, cmd: string, args: string[], cwd: string): Promi
   return r.stdout;
 }
 
-export async function startBranch(exec: Exec, o: { repoDir: string; branch: string; base: string; local?: boolean }): Promise<string> {
+export async function startBranch(exec: Exec, o: { repoDir: string; branch: string; base: string; local?: boolean; from?: string }): Promise<string> {
   const worktree = join(o.repoDir, ".worktrees", o.branch.replaceAll("/", "-"));
   // Parte do remoto atualizado: passos dependentes precisam enxergar o que já foi mergeado no base.
   // Modo local não tem remoto: parte do base local, que já recebe os merges dos passos anteriores.
   if (!o.local) await must(exec, "git", ["fetch", "origin", o.base], o.repoDir);
-  await must(exec, "git", ["worktree", "add", "-b", o.branch, worktree, o.local ? o.base : `origin/${o.base}`], o.repoDir);
+  await must(exec, "git", ["worktree", "add", "-b", o.branch, worktree, o.from ?? (o.local ? o.base : `origin/${o.base}`)], o.repoDir);
   return worktree;
 }
 
