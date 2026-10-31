@@ -33,13 +33,16 @@ const grokBot: Transport = async () => {
 };
 
 async function main() {
-  const cfg = loadConfig(process.env.ROUTER_CONFIG ?? join(INSTALL_DIR, "config/router.yaml"));
+  const loaded = loadConfig(process.env.ROUTER_CONFIG ?? join(INSTALL_DIR, "config/router.yaml"));
+  // ROUTER_LOCAL_TEST="npm test" liga o modo local (sem GitHub/CI) sem precisar copiar o catálogo.
+  const localTest = process.env.ROUTER_LOCAL_TEST?.trim();
+  const cfg = localTest ? { ...loaded, verify: { ...loaded.verify, mode: "local" as const, test_cmd: localTest.split(/\s+/) } } : loaded;
   const dbPath = process.env.ROUTER_DB ?? defaultDbPath();
   mkdirSync(dirname(dbPath), { recursive: true });
   const repo = makeRepo(openDb(dbPath));
   const repoDir = process.env.ROUTER_REPO_DIR ?? process.cwd();
-  // Fora de um repositório git não há runner a ligar: o servidor sobe sem lease em vez de cair.
-  const lease = await runnerInstance(repoDir).then(
+  // Fora de um repositório git (ou no modo local) não há runner a ligar: o servidor sobe sem lease em vez de cair.
+  const lease = cfg.verify.mode === "local" ? undefined : await runnerInstance(repoDir).then(
     (instance) =>
       makeLease(realExec, { up: join(INSTALL_DIR, "ci/runner-up.sh"), down: join(INSTALL_DIR, "ci/runner-down.sh"), args: [instance] }),
     (e) => (console.error(e instanceof Error ? e.message : e), undefined),
@@ -48,7 +51,7 @@ async function main() {
 
   // stdout é o canal MCP: todo log vai para stderr.
   const server = makeServer({
-    cfg, adapters, repo, exec: realExec, runner: "self_hosted", base: "main", transport: grokBot,
+    cfg, adapters, repo, exec: realExec, runner: "self_hosted", base: process.env.ROUTER_BASE ?? "main", transport: grokBot,
     repoDir, lease,
   });
   await server.connect(new StdioServerTransport());

@@ -93,3 +93,9 @@ test("rejects a ladder that steps down a tier", () => {
   c.escalation.ladder.mid = [{ tier: "mid", effort: "medium" }, { tier: "cheap", effort: "low" }];
   assert.throws(() => parseConfig(c), /ladder/);
 });
+
+test("verify.mode defaults to pr and local requires a test command", () => {
+  assert.equal(parseConfig(base()).verify.mode, "pr");
+  assert.throws(() => parseConfig({ ...base(), verify: { auto_merge: true, delete_branch: true, mode: "local" } }), /requires verify.test_cmd/);
+  assert.equal(parseConfig({ ...base(), verify: { auto_merge: true, delete_branch: true, mode: "local", test_cmd: ["npm", "test"] } }).verify.mode, "local");
+});

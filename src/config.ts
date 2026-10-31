@@ -52,7 +52,12 @@ const schema = z
         strong: z.array(step).min(1),
       }),
     }),
-    verify: z.object({ auto_merge: z.boolean(), delete_branch: z.boolean() }),
+    verify: z.object({
+      mode: z.enum(["pr", "local"]).default("pr"),
+      test_cmd: z.array(z.string()).min(1).optional(),
+      auto_merge: z.boolean(),
+      delete_branch: z.boolean(),
+    }),
     dispatch: z.object({ cloud_tiers: z.array(tier), heartbeat_timeout_s: z.number().int().positive() }),
   })
   .superRefine((cfg, ctx) => {
@@ -71,6 +76,9 @@ const schema = z
         if (prev) ctx.addIssue({ code: "custom", message: `model "${name}" is in two tiers (${prev}, ${t})` });
         seen.set(name, t);
       }
+    }
+    if (cfg.verify.mode === "local" && !cfg.verify.test_cmd) {
+      ctx.addIssue({ code: "custom", message: 'verify.mode "local" requires verify.test_cmd' });
     }
     if (!cfg.models[cfg.triage.model]) {
       ctx.addIssue({ code: "custom", message: `triage.model "${cfg.triage.model}" is not in models` });
