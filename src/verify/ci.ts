@@ -1,6 +1,6 @@
 import type { Exec } from "../exec.ts";
 
-export type Verdict = { result: "merged" } | { result: "failed"; reason: string } | { result: "conflict"; reason: string };
+export type Verdict = { result: "merged" } | { result: "passed" } | { result: "failed"; reason: string } | { result: "conflict"; reason: string };
 
 const NO_CHECKS = /no checks reported/i;
 const NO_CHECKS_RETRIES = 6;
@@ -29,7 +29,7 @@ async function failedLogTail(exec: Exec, cwd: string, pr: string): Promise<strin
 
 export async function verifyAndMerge(
   exec: Exec,
-  o: { cwd: string; pr: number; deleteBranch: boolean; branch?: string; base?: string; timeoutMs?: number; pollMs?: number },
+  o: { cwd: string; pr: number; deleteBranch: boolean; autoMerge?: boolean; branch?: string; base?: string; timeoutMs?: number; pollMs?: number },
 ): Promise<Verdict> {
   const pr = String(o.pr);
   const base = o.base ?? "main";
@@ -50,6 +50,9 @@ export async function verifyAndMerge(
     const tail = await failedLogTail(exec, o.cwd, pr);
     return { result: "failed", reason: tail ? `${table}\n\n--- failed job log (last ${LOG_TAIL_LINES} lines) ---\n${tail}` : table };
   }
+
+  // auto_merge off: CI verde e PR aberto para revisão humana.
+  if (o.autoMerge === false) return { result: "passed" };
 
   // --delete-branch tenta dar checkout do base dentro do worktree e falha; apaga o remoto à parte.
   const merge = await exec("gh", ["pr", "merge", pr, "--rebase"], { cwd: o.cwd });

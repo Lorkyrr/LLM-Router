@@ -96,6 +96,9 @@ test("rejects a ladder that steps down a tier", () => {
 
 test("verify.mode defaults to pr and local requires a test command", () => {
   assert.equal(parseConfig(base()).verify.mode, "pr");
-  assert.throws(() => parseConfig({ ...base(), verify: { auto_merge: true, delete_branch: true, mode: "local" } }), /requires verify.test_cmd/);
-  assert.equal(parseConfig({ ...base(), verify: { auto_merge: true, delete_branch: true, mode: "local", test_cmd: ["npm", "test"] } }).verify.mode, "local");
+  assert.throws(() => parseConfig({ ...base(), verify: { auto_merge: true, delete_branch: true, mode: "local" } }), /requires verify.local.cmds/);
+  assert.equal(parseConfig({ ...base(), verify: { auto_merge: true, delete_branch: true, mode: "local", local: { cmds: [["npm", "test"]] } } }).verify.mode, "local");
+  assert.throws(() => parseConfig({ ...base(), verify: { auto_merge: true, delete_branch: true, mode: "staged" } }), /requires verify.local.cmds/);
+  const staged = parseConfig({ ...base(), verify: { auto_merge: true, delete_branch: true, mode: "staged", local: { cmds: [["npm", "test"]] } } });
+  assert.equal(staged.verify.local?.timeout_s, 1800);
 });

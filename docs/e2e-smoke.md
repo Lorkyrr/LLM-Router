@@ -6,7 +6,7 @@ Execute `npm test`, `npm run typecheck`, `codex --version` e `codex exec --help`
 
 ## Smoke real
 
-Este procedimento consome cota e pode publicar alterações. Use repositório de teste autorizado, banco exclusivo (`ROUTER_DB`) e runner de CI configurado. O fluxo atual tenta merge após checks verdes; `verify.auto_merge` ainda não desliga essa chamada.
+Este procedimento consome cota e pode publicar alterações. Use repositório de teste autorizado, banco exclusivo (`ROUTER_DB`) e runner de CI configurado. O fluxo tenta merge após checks verdes; `verify.auto_merge: false` deixa o PR aberto. `verify.mode: staged` roda antes um gate local sem tocar o GitHub.
 
 1. Autentique os CLIs usados e `gh` localmente.
 2. Inicie MCP com `ROUTER_REPO_DIR` apontando para o projeto de teste. Confirme disponibilidade em `check_models`.

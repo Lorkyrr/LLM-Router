@@ -53,8 +53,9 @@ const schema = z
       }),
     }),
     verify: z.object({
-      mode: z.enum(["pr", "local"]).default("pr"),
-      test_cmd: z.array(z.string()).min(1).optional(),
+      // pr: push + CI do GitHub; local: gate local e merge no checkout; staged: gate local e depois PR + CI + merge.
+      mode: z.enum(["pr", "local", "staged"]).default("pr"),
+      local: z.object({ cmds: z.array(z.array(z.string()).min(1)).min(1), timeout_s: z.number().int().positive().default(1800) }).optional(),
       auto_merge: z.boolean(),
       delete_branch: z.boolean(),
     }),
@@ -77,8 +78,8 @@ const schema = z
         seen.set(name, t);
       }
     }
-    if (cfg.verify.mode === "local" && !cfg.verify.test_cmd) {
-      ctx.addIssue({ code: "custom", message: 'verify.mode "local" requires verify.test_cmd' });
+    if (cfg.verify.mode !== "pr" && !cfg.verify.local) {
+      ctx.addIssue({ code: "custom", message: `verify.mode "${cfg.verify.mode}" requires verify.local.cmds` });
     }
     if (!cfg.models[cfg.triage.model]) {
       ctx.addIssue({ code: "custom", message: `triage.model "${cfg.triage.model}" is not in models` });

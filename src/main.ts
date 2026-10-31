@@ -34,9 +34,13 @@ const grokBot: Transport = async () => {
 
 async function main() {
   const loaded = loadConfig(process.env.ROUTER_CONFIG ?? join(INSTALL_DIR, "config/router.yaml"));
-  // ROUTER_LOCAL_TEST="npm test" liga o modo local (sem GitHub/CI) sem precisar copiar o catálogo.
+  // ROUTER_LOCAL_TEST="npm run typecheck && npm test" liga o gate local sem copiar o catálogo; ROUTER_VERIFY_MODE=staged
+  // também sobe o PR e o CI do GitHub depois do gate (padrão: local, sem GitHub).
   const localTest = process.env.ROUTER_LOCAL_TEST?.trim();
-  const cfg = localTest ? { ...loaded, verify: { ...loaded.verify, mode: "local" as const, test_cmd: localTest.split(/\s+/) } } : loaded;
+  const mode = (process.env.ROUTER_VERIFY_MODE ?? "local") as "local" | "staged";
+  if (mode !== "local" && mode !== "staged") throw new Error(`ROUTER_VERIFY_MODE must be local or staged, got "${mode}"`);
+  const cmds = localTest?.split("&&").map((c) => c.trim().split(/\s+/)).filter((c) => c[0]);
+  const cfg = cmds?.length ? { ...loaded, verify: { ...loaded.verify, mode, local: { cmds, timeout_s: loaded.verify.local?.timeout_s ?? 1800 } } } : loaded;
   const dbPath = process.env.ROUTER_DB ?? defaultDbPath();
   mkdirSync(dirname(dbPath), { recursive: true });
   const repo = makeRepo(openDb(dbPath));
