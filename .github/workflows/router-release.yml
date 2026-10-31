@@ -1,0 +1,32 @@
+# Sinal do usuário para o fluxo staged: os PRs router/* ficam abertos (só passaram no CI local) até alguém disparar este
+# workflow (`gh workflow run router-release.yml` ou a ferramenta MCP `release`). Ele compara todos os PRs abertos,
+# roda o CI de cada um sobre a base atualizada, faz merge (rebase) dos verdes e apaga os branches.
+# Merge feito com GITHUB_TOKEN não dispara outros workflows; o CI roda aqui mesmo.
+name: router-release
+
+on: workflow_dispatch
+
+# Dois releases ao mesmo tempo mergeariam em ordem imprevisível.
+concurrency: router-release
+
+permissions:
+  contents: write
+  pull-requests: write
+
+jobs:
+  release:
+    runs-on: [self-hosted, router-ci]
+    env:
+      GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 26
+      - run: npm ci
+      - name: Release router PRs
+        env:
+          BASE_REF: ${{ github.event.repository.default_branch }}
+        run: node --import tsx ci/release.ts --base "$BASE_REF" --prefix router/ -- ci/pr-ci.sh
