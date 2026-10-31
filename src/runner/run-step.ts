@@ -3,13 +3,14 @@ import type { Config, Tier } from "../config.ts";
 import type { Adapter, AdapterName } from "../adapters/types.ts";
 import { availability } from "../catalog/check.ts";
 import type { Exec } from "../exec.ts";
-import { publishBranch, startBranch } from "../git/branch.ts";
+import { commitAll, publishBranch, startBranch } from "../git/branch.ts";
 import { estimateCost } from "../policy/cost.ts";
 import { stepFor } from "../policy/escalate.ts";
 import type { Lease } from "./lease.ts";
 import { selectModel } from "../policy/select.ts";
 import type { Repo, Runner } from "../store/repo.ts";
 import { verifyAndMerge } from "../verify/ci.ts";
+import { verifyLocal } from "../verify/local.ts";
 
 export type StepDeps = {
   cfg: Config;
@@ -36,6 +37,7 @@ const promptFor = (brief: string, lastFailure: string | null) =>
 
 export async function runStep(d: StepDeps, stepId: string): Promise<StepOutcome> {
   const { cfg, repo } = d;
+  const local = cfg.verify.mode === "local";
   const step = repo.getStep(stepId);
   if (!step) throw new Error(`run-step: unknown step ${stepId}`);
   // Numeração continua de onde parou para a retomada de um passo failed/waiting_quota não repetir n.
@@ -57,7 +59,7 @@ export async function runStep(d: StepDeps, stepId: string): Promise<StepOutcome>
       worktree = join(d.repoDir, ".worktrees", branch.replaceAll("/", "-"));
     } else {
       branch = `router/step-${step.id.slice(0, 8)}`;
-      worktree = await startBranch(d.exec, { repoDir: d.repoDir, branch, base: d.base });
+      worktree = await startBranch(d.exec, { repoDir: d.repoDir, branch, base: d.base, local });
       repo.updateStep(stepId, { branch });
     }
 
@@ -112,24 +114,45 @@ export async function runStep(d: StepDeps, stepId: string): Promise<StepOutcome>
         continue;
       }
 
-      const pub = await publishBranch(d.exec, {
-        worktree, branch, base: d.base, title: step.brief.split("\n")[0]!.slice(0, 72), body: step.brief,
-        ...(prNumber ? { pr_number: prNumber } : {}),
-      });
-      if (!pub.changed) {
-        lastFailure = "agent made no changes";
-        finish({ failure_reason: lastFailure });
-        rung++;
-        continue;
-      }
-      prNumber = pub.pr_number;
-      repo.updateStep(stepId, { pr_number: prNumber });
+      const title = step.brief.split("\n")[0]!.slice(0, 72);
+      let verdict;
+      if (local) {
+        if (!(await commitAll(d.exec, { worktree, title }))) {
+          lastFailure = "agent made no changes";
+          finish({ failure_reason: lastFailure });
+          rung++;
+          continue;
+        }
+        verdict = await verifyLocal(d.exec, {
+          worktree, repoDir: d.repoDir, branch, base: d.base, testCmd: cfg.verify.test_cmd!, autoMerge: cfg.verify.auto_merge,
+          timeoutMs: CI_TIMEOUT_MS,
+        });
+      } else {
+        const pub = await publishBranch(d.exec, {
+          worktree, branch, base: d.base, title, body: step.brief,
+          ...(prNumber ? { pr_number: prNumber } : {}),
+        });
+        if (!pub.changed) {
+          lastFailure = "agent made no changes";
+          finish({ failure_reason: lastFailure });
+          rung++;
+          continue;
+        }
+        prNumber = pub.pr_number;
+        repo.updateStep(stepId, { pr_number: prNumber });
 
-      // O runner local só fica ligado enquanto o CI deste PR roda.
-      await d.lease?.acquire();
-      const verdict = await verifyAndMerge(d.exec, {
-        cwd: worktree, pr: prNumber, deleteBranch: cfg.verify.delete_branch, timeoutMs: CI_TIMEOUT_MS, branch,
-      }).finally(() => d.lease?.release());
+        // O runner local só fica ligado enquanto o CI deste PR roda.
+        await d.lease?.acquire();
+        verdict = await verifyAndMerge(d.exec, {
+          cwd: worktree, pr: prNumber, deleteBranch: cfg.verify.delete_branch, timeoutMs: CI_TIMEOUT_MS, branch,
+        }).finally(() => d.lease?.release());
+      }
+      if (verdict.result === "passed") {
+        // auto_merge off: o trabalho fica no branch/worktree para revisão; limpar apagaria o resultado.
+        finish({ ci_result: "passed" });
+        repo.updateStep(stepId, { status: "done" });
+        return { status: "done", attempts: n };
+      }
       if (verdict.result === "merged") {
         finish({ ci_result: "merged" });
         // Sem isto cada passo deixa um worktree e um branch local para trás; falha de limpeza não desfaz o merge.

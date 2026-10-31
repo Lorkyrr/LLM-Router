@@ -220,3 +220,45 @@ test("a merged step removes its worktree and local branch from the repo dir", as
   assert.equal(remove.opts?.cwd, "/repo");
   assert.ok(s.exec.calls.some((c) => c.args[0] === "branch" && c.args[1] === "-D"));
 });
+
+function setupLocal(agent: RunResult[], tests: number[], autoMerge = true) {
+  const s = setup(agent, []);
+  let t = 0;
+  const a = (c: { args: string[] }, ...x: string[]) => x.every((v, i) => c.args[i] === v);
+  const exec = fakeExec([
+    { when: (c) => a(c, "worktree", "add"), reply: ok() },
+    { when: (c) => a(c, "worktree", "remove") || a(c, "branch"), reply: ok() },
+    { when: (c) => a(c, "add"), reply: ok() },
+    { when: (c) => a(c, "status"), reply: ok(" M f\n") },
+    { when: (c) => a(c, "commit"), reply: ok() },
+    { when: (c) => c.cmd === "npm", reply: () => ({ code: tests[t++] ?? 0, stdout: "not ok 1", stderr: "" }) },
+    { when: (c) => a(c, "rev-parse"), reply: ok("main\n") },
+    { when: (c) => a(c, "rebase") || a(c, "merge"), reply: ok() },
+  ]);
+  const cfgLocal = { ...cfg, verify: { ...cfg.verify, mode: "local" as const, test_cmd: ["npm", "test"], auto_merge: autoMerge } };
+  return { ...s, exec, deps: { ...s.deps, cfg: cfgLocal, exec } };
+}
+
+test("local mode: no fetch, push or gh; tests green merges locally and cleans up", async () => {
+  const s = setupLocal([good], [0]);
+  assert.deepEqual(await runStep(s.deps, s.step.id), { status: "done", attempts: 1 });
+  assert.ok(!s.exec.calls.some((c) => c.cmd === "gh" || c.args[0] === "fetch" || c.args[0] === "push"));
+  assert.equal(s.exec.calls.find((c) => c.args[0] === "worktree")!.args.at(-1), "main");
+  assert.equal(s.repo.listAttempts(s.step.id)[0]!.ci_result, "merged");
+  assert.ok(s.exec.calls.some((c) => c.args[0] === "worktree" && c.args[1] === "remove"));
+  assert.equal(s.repo.getStep(s.step.id)!.pr_number, null);
+});
+
+test("local mode: red tests retry with the test output in the prompt", async () => {
+  const s = setupLocal([good], [1, 0]);
+  assert.deepEqual(await runStep(s.deps, s.step.id), { status: "done", attempts: 2 });
+  assert.match(s.runs[1]!.prompt, /not ok 1/);
+  assert.equal(s.runs[1]!.effort, "high");
+});
+
+test("local mode with auto_merge off: step is done, branch and worktree are kept for review", async () => {
+  const s = setupLocal([good], [0], false);
+  assert.deepEqual(await runStep(s.deps, s.step.id), { status: "done", attempts: 1 });
+  assert.equal(s.repo.listAttempts(s.step.id)[0]!.ci_result, "passed");
+  assert.ok(!s.exec.calls.some((c) => c.args[0] === "merge" || (c.args[0] === "worktree" && c.args[1] === "remove")));
+});

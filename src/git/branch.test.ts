@@ -1,7 +1,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { fakeExec, ok, fail } from "../../test/fixtures/fake-exec.ts";
-import { startBranch, publishBranch } from "./branch.ts";
+import { startBranch, publishBranch, commitAll } from "./branch.ts";
 
 const is = (cmd: string, ...sub: string[]) => (c: { cmd: string; args: string[] }) =>
   c.cmd === cmd && sub.every((s, i) => c.args[i] === s);
@@ -68,4 +68,22 @@ test("publishBranch on an existing PR pushes the new commit and reuses the numbe
   const r = await publishBranch(exec, { worktree: "/wt", branch: "b", base: "main", title: "t", body: "", pr_number: 9 });
   assert.deepEqual(r, { changed: true, pr_number: 9 });
   assert.ok(!exec.calls.some((c) => c.cmd === "gh"));
+});
+
+test("startBranch in local mode skips the fetch and branches off the local base", async () => {
+  const e = fakeExec([{ when: () => true, reply: ok() }]);
+  await startBranch(e, { repoDir: "/r", branch: "router/step-1", base: "main", local: true });
+  assert.deepEqual(e.calls.map((c) => c.args[0]), ["worktree"]);
+  assert.equal(e.calls[0]!.args.at(-1), "main");
+});
+
+test("commitAll commits when there are changes and reports false when there are none", async () => {
+  let dirty = " M f\n";
+  const e = fakeExec([{ when: (c) => c.args[0] === "status", reply: () => ok(dirty) }, { when: () => true, reply: ok() }]);
+  assert.equal(await commitAll(e, { worktree: "/w", title: "t" }), true);
+  assert.ok(e.calls.some((c) => c.args[0] === "commit"));
+  dirty = "";
+  e.calls.length = 0;
+  assert.equal(await commitAll(e, { worktree: "/w", title: "t" }), false);
+  assert.ok(!e.calls.some((c) => c.args[0] === "commit"));
 });
