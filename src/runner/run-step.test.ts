@@ -69,10 +69,11 @@ test("implementation steps from a Claude plan select Codex using the phase polic
   assert.equal(s.runs[0]!.model, "gpt-6.1-sol");
 });
 
-test("red CI retries in a fresh run with higher effort and the failure in the prompt", async () => {
+test("red CI retries in a fresh run with the next model of the tier and the failure in the prompt", async () => {
   const s = setup([good], ["red", "green"]);
   assert.deepEqual(await runStep(s.deps, s.step.id), { status: "done", attempts: 2 });
-  assert.equal(s.runs[1]!.effort, "high");
+  assert.equal(s.runs[1]!.effort, "medium");
+  assert.equal(s.runs[1]!.model, "gpt-6.1-sol");
   assert.match(s.runs[1]!.prompt, /implemente x/);
   assert.match(s.runs[1]!.prompt, /lint fail/);
   assert.equal(s.runs[0]!.prompt, "implemente x");
@@ -85,7 +86,8 @@ test("three reds stop with the branch open and the reason", async () => {
   assert.equal(r.status, "failed");
   assert.equal(r.attempts, 3);
   assert.match((r as { reason: string }).reason, /lint fail/);
-  assert.deepEqual(s.runs.map((x) => x.effort), ["medium", "high", "xhigh"]);
+  // Antes de subir o esforço, o passo tenta os outros modelos do mesmo tier (sonnet, sol); terra está desativado.
+  assert.deepEqual(s.runs.map((x) => x.effort), ["medium", "medium", "high"]);
   assert.ok(!s.exec.calls.some((c) => c.args[1] === "merge"));
   assert.equal(s.repo.getStep(s.step.id)!.status, "failed");
 });
@@ -114,6 +116,23 @@ test("an agent that changes nothing fails the attempt", async () => {
   const r = await runStep(s.deps, s.step.id);
   assert.deepEqual(r, { status: "done", attempts: 2 });
   assert.match(s.repo.listAttempts(s.step.id)[0]!.failure_reason ?? "", /no changes/);
+});
+
+test("failure on a simple_edit step tries the other available cheap model before moving up a tier", async () => {
+  const s = setup([good], ["green"], "cheap", [false]);
+  s.repo.updateTask(s.step.task_id, { phase: "simple_edit" });
+  assert.deepEqual(await runStep(s.deps, s.step.id), { status: "done", attempts: 2 });
+  assert.deepEqual(s.repo.listAttempts(s.step.id).map((a) => [a.model, a.tier]), [["haiku-5-5", "cheap"], ["gpt-6-luna", "cheap"]]);
+});
+
+test("only after every cheap model failed does the step escalate, within max_attempts", async () => {
+  const wide = { ...cfg, escalation: { ...cfg.escalation, max_attempts: 4 } };
+  const s = setup([good], [], "cheap", [false, false, false, false]);
+  const r = await runStep({ ...s.deps, cfg: wide }, s.step.id);
+  assert.equal(r.status, "failed");
+  assert.deepEqual(s.repo.listAttempts(s.step.id).map((a) => [a.model, a.tier]), [
+    ["haiku-5-5", "cheap"], ["grok-fast", "cheap"], ["gpt-6-luna", "cheap"], ["sonnet-5-5", "mid"],
+  ]);
 });
 
 test("cost falls back to the price table when the CLI gives none", async () => {
@@ -253,7 +272,7 @@ test("local mode: red tests retry with the test output in the prompt", async () 
   const s = setupLocal([good], [1, 0]);
   assert.deepEqual(await runStep(s.deps, s.step.id), { status: "done", attempts: 2 });
   assert.match(s.runs[1]!.prompt, /not ok 1/);
-  assert.equal(s.runs[1]!.effort, "high");
+  assert.equal(s.runs[1]!.model, "gpt-6.1-sol");
 });
 
 test("local mode with auto_merge off: step is done, branch and worktree are kept for review", async () => {

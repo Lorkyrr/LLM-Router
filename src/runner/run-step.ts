@@ -83,12 +83,16 @@ export async function runStep(d: StepDeps, stepId: string): Promise<StepOutcome>
       repo.updateStep(stepId, { branch });
     }
 
+    // `rung` = degrau da escada; `failures` = tentativas gastas (teto max_attempts). Falha não-quota tenta antes os
+    // outros modelos do mesmo degrau (`tried`) e só então sobe o degrau.
     let rung = 1;
+    let failures = 0;
+    const tried = new Set<string>();
     let prNumber = step.pr_number;
     let lastFailure: string | null = null;
 
     for (;;) {
-      const rungStep = stepFor(cfg, step.tier as Tier, rung);
+      const rungStep = failures >= cfg.escalation.max_attempts ? null : stepFor(cfg, step.tier as Tier, rung);
       if (!rungStep) {
         repo.updateStep(stepId, { status: "failed" });
         return { status: "failed", attempts: n, reason: lastFailure ?? "no attempts left" };
@@ -97,7 +101,14 @@ export async function runStep(d: StepDeps, stepId: string): Promise<StepOutcome>
       // Passos mid de um plano strong são implementação; escalada cheap→mid também.
       const phase = !taskPhase ? undefined : cfg.phases[taskPhase].tier === rungStep.tier ? taskPhase
         : rungStep.tier === "mid" ? "implementing" : rungStep.tier === "cheap" ? "simple_edit" : "integration";
-      const name = selectModel(cfg, rungStep.tier, availability(repo), phase);
+      const states: Record<string, { available: boolean }> = { ...availability(repo) };
+      for (const t of tried) states[t] = { available: false };
+      const name = selectModel(cfg, rungStep.tier, states, phase);
+      if (!name && tried.size) {
+        rung++;
+        tried.clear();
+        continue;
+      }
       if (!name) {
         repo.updateStep(stepId, { status: "waiting_quota" });
         return { status: "waiting_quota", attempts: n };
@@ -130,7 +141,8 @@ export async function runStep(d: StepDeps, stepId: string): Promise<StepOutcome>
         }
         lastFailure = run.error ?? "agent failed";
         finish({ failure_reason: lastFailure });
-        rung++;
+        failures++;
+        tried.add(name);
         continue;
       }
 
@@ -139,7 +151,8 @@ export async function runStep(d: StepDeps, stepId: string): Promise<StepOutcome>
       if (mode !== "pr" && !(await commitAll(d.exec, { worktree, title }))) {
         lastFailure = "agent made no changes";
         finish({ failure_reason: lastFailure });
-        rung++;
+        failures++;
+        tried.add(name);
         continue;
       }
       const localOpts = { worktree, cmds: cfg.verify.local?.cmds ?? [], timeoutMs: (cfg.verify.local?.timeout_s ?? 0) * 1000 };
@@ -167,7 +180,8 @@ export async function runStep(d: StepDeps, stepId: string): Promise<StepOutcome>
           if (!pub.changed) {
             lastFailure = "agent made no changes";
             finish({ failure_reason: lastFailure });
-            rung++;
+            failures++;
+            tried.add(name);
             continue;
           }
           prNumber = pub.pr_number;
@@ -202,7 +216,8 @@ export async function runStep(d: StepDeps, stepId: string): Promise<StepOutcome>
       }
       lastFailure = verdict.reason;
       finish({ ci_result: stage + verdict.result, failure_reason: verdict.reason });
-      rung++;
+      failures++;
+      tried.add(name);
     }
   } catch (e) {
     // Qualquer exceção (git, CLI, gh, runner) vira falha do passo: sem isso ele ficaria `running` e o attempt aberto.
