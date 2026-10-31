@@ -156,7 +156,7 @@ dispatch:
 - Luna (cheap), Sol (mid) e Astra (strong) integram o catálogo; Terra (mid especializado) fica desativado. `phases.<fase>.prefer` define Opus para planejar, Sol para implementar e Astra para integrar/revisar, com alternativas da mesma categoria. Preços Claude/OpenAI têm fonte/data; `route` expõe diretrizes do modelo selecionado.
 - Tokens de cache Codex são separados do total de entrada. Custos sem valor fornecido pelo CLI são estimados; o relatório não confirma fatura nem saldo de assinatura.
 - As seções e o diagrama anteriores descrevem também objetivos futuros: cloud ainda é esqueleto; dispatch/recuperação não estão ligados ao fluxo principal; hook apenas registra mensagens. O banco global ainda exige separação por projeto via `ROUTER_DB`.
-- O executor continua exigindo alterações Git, portanto perguntas e revisões sem alteração não têm fluxo próprio. `verify.auto_merge` ainda não controla a chamada ao merge. Não foram corrigidos nesta extensão.
+- O executor continua exigindo alterações Git, portanto perguntas e revisões sem alteração não têm fluxo próprio. `verify.auto_merge: false` agora para após o CI verde, com o PR aberto. Não foram corrigidos nesta extensão.
 - Diretrizes de contribuição: [AGENTS.md](AGENTS.md). Operação: [README.md](README.md). Validação: [docs/e2e-smoke.md](docs/e2e-smoke.md). Documentos em `.planning/` preservam o escopo histórico do MVP.
 
 ## Correção de execução e conexão

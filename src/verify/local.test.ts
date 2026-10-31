@@ -1,9 +1,9 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { fakeExec, ok, fail } from "../../test/fixtures/fake-exec.ts";
-import { verifyLocal } from "./local.ts";
+import { runLocalChecks, verifyLocal } from "./local.ts";
 
-const o = { worktree: "/repo/.worktrees/b", repoDir: "/repo", branch: "router/step-1", base: "main", testCmd: ["npm", "test"], autoMerge: true };
+const o = { worktree: "/repo/.worktrees/b", repoDir: "/repo", branch: "router/step-1", base: "main", cmds: [["npm", "test"]], autoMerge: true };
 const a = (c: { args: string[] }, ...s: string[]) => s.every((x, i) => c.args[i] === x);
 function exec(over: { tests?: ReturnType<typeof ok>; head?: string; rebase?: ReturnType<typeof ok>; merge?: ReturnType<typeof ok> } = {}) {
   return fakeExec([
@@ -59,4 +59,17 @@ test("a refused fast-forward (e.g. dirty files in the repo) is a failure with gi
   const v = await verifyLocal(exec({ merge: fail("would be overwritten") }), o);
   assert.equal(v.result, "failed");
   assert.match((v as { reason: string }).reason, /would be overwritten/);
+});
+
+test("runLocalChecks runs the commands in order and stops at the first failure, naming it", async () => {
+  const e = fakeExec([
+    { when: (c) => c.cmd === "tsc", reply: ok() },
+    { when: (c) => c.cmd === "npm", reply: { code: 2, stdout: "boom", stderr: "" } },
+    { when: (c) => c.cmd === "never", reply: ok() },
+  ]);
+  const v = await runLocalChecks(e, { worktree: "/w", cmds: [["tsc"], ["npm", "test"], ["never"]] });
+  assert.equal(v.result, "failed");
+  assert.match((v as { reason: string }).reason, /^\$ npm test \(exit 2\)\nboom/);
+  assert.deepEqual(e.calls.map((c) => c.cmd), ["tsc", "npm"]);
+  assert.deepEqual(await runLocalChecks(fakeExec([{ when: () => true, reply: ok() }]), { worktree: "/w", cmds: [["a"], ["b"]] }), { result: "passed" });
 });

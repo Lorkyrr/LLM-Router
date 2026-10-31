@@ -37,7 +37,7 @@ test("local mode end to end with real git: agent edit is tested, rebased and fas
       return { available: true, quota_state: "ok" };
     },
   };
-  const cfg = { ...cfg0, verify: { ...cfg0.verify, mode: "local" as const, test_cmd: ["test", "-f", "b.txt"], auto_merge: true } };
+  const cfg = { ...cfg0, verify: { ...cfg0.verify, mode: "local" as const, local: { cmds: [["test", "-f", "b.txt"]], timeout_s: 60 }, auto_merge: true } };
   const out = await runStep(
     { cfg, adapters: { "claude-code": adapter, "grok-build": adapter, codex: adapter }, repo, exec: realExec, repoDir: dir, base: "main", runner: "self_hosted" },
     step.id,

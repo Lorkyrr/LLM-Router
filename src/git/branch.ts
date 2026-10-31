@@ -25,11 +25,15 @@ export async function commitAll(exec: Exec, o: { worktree: string; title: string
 
 export type Published = { changed: false } | { changed: true; pr_number: number };
 
-export async function publishBranch(
-  exec: Exec,
-  o: { worktree: string; branch: string; base: string; title: string; body: string; pr_number?: number },
-): Promise<Published> {
+type PushOptions = { worktree: string; branch: string; base: string; title: string; body: string; pr_number?: number };
+
+export async function publishBranch(exec: Exec, o: PushOptions): Promise<Published> {
   if (!(await commitAll(exec, o))) return { changed: false };
+  return pushBranch(exec, o);
+}
+
+// Push + PR de um branch já commitado (o estágio 2 do modo staged chega aqui depois do gate local).
+export async function pushBranch(exec: Exec, o: PushOptions): Promise<{ changed: true; pr_number: number }> {
   await must(exec, "git", ["push", "-u", "--force-with-lease", "origin", o.branch], o.worktree);
   if (o.pr_number) return { changed: true, pr_number: o.pr_number };
   const out = await must(

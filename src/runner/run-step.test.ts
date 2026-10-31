@@ -235,7 +235,7 @@ function setupLocal(agent: RunResult[], tests: number[], autoMerge = true) {
     { when: (c) => a(c, "rev-parse"), reply: ok("main\n") },
     { when: (c) => a(c, "rebase") || a(c, "merge"), reply: ok() },
   ]);
-  const cfgLocal = { ...cfg, verify: { ...cfg.verify, mode: "local" as const, test_cmd: ["npm", "test"], auto_merge: autoMerge } };
+  const cfgLocal = { ...cfg, verify: { ...cfg.verify, mode: "local" as const, local: { cmds: [["npm", "test"]], timeout_s: 60 }, auto_merge: autoMerge } };
   return { ...s, exec, deps: { ...s.deps, cfg: cfgLocal, exec } };
 }
 
@@ -261,4 +261,71 @@ test("local mode with auto_merge off: step is done, branch and worktree are kept
   assert.deepEqual(await runStep(s.deps, s.step.id), { status: "done", attempts: 1 });
   assert.equal(s.repo.listAttempts(s.step.id)[0]!.ci_result, "passed");
   assert.ok(!s.exec.calls.some((c) => c.args[0] === "merge" || (c.args[0] === "worktree" && c.args[1] === "remove")));
+});
+
+// Staged: gate local (fetch, rebase, checks) antes de qualquer push; depois PR, CI e merge.
+function setupStaged(agent: RunResult[], local: number[], ci: Ci[], autoMerge = true, rebase: ("ok" | "conflict")[] = []) {
+  const s = setup(agent, ci);
+  let l = 0;
+  let r = 0;
+  let round = 0;
+  let acquires = 0;
+  const a = (c: { args: string[] }, ...x: string[]) => x.every((v, i) => c.args[i] === v);
+  const exec = fakeExec([
+    { when: (c) => a(c, "fetch") || a(c, "worktree") || a(c, "branch") || a(c, "add") || a(c, "commit") || a(c, "push"), reply: ok() },
+    { when: (c) => a(c, "status"), reply: ok(" M f\n") },
+    { when: (c) => a(c, "rebase", "--abort"), reply: ok() },
+    { when: (c) => a(c, "rebase"), reply: () => (rebase[r++] === "conflict" ? fail("CONFLICT") : ok()) },
+    { when: (c) => c.cmd === "npm", reply: () => ({ code: local[l++] ?? 0, stdout: "not ok 1", stderr: "" }) },
+    { when: (c) => c.cmd === "gh" && a(c, "pr", "create"), reply: ok("https://github.com/o/r/pull/5") },
+    { when: (c) => a(c, "pr", "view"), reply: () => ok(JSON.stringify({ mergeable: ci[round++] === "conflict" ? "CONFLICTING" : "MERGEABLE" })) },
+    { when: (c) => a(c, "pr", "checks"), reply: () => ({ code: ci[round - 1] === "red" ? 1 : 0, stdout: "lint fail", stderr: "" }) },
+    { when: (c) => a(c, "pr", "merge"), reply: ok() },
+  ]);
+  const lease = { acquire: async () => void acquires++, release: async () => {} };
+  const cfgStaged = { ...cfg, verify: { ...cfg.verify, mode: "staged" as const, local: { cmds: [["npm", "test"]], timeout_s: 60 }, auto_merge: autoMerge } };
+  return { ...s, exec, acquires: () => acquires, deps: { ...s.deps, cfg: cfgStaged, exec, lease } };
+}
+const idx = (e: { calls: { cmd: string; args: string[] }[] }, f: (c: { cmd: string; args: string[] }) => boolean) => e.calls.findIndex(f);
+
+test("staged: local gate passes, then PR, CI and merge; nothing is pushed before the gate", async () => {
+  const s = setupStaged([good], [0], ["green"]);
+  assert.deepEqual(await runStep(s.deps, s.step.id), { status: "done", attempts: 1 });
+  const order = ["rebase", "npm", "push", "gh"].map((k) => idx(s.exec, (c) => (k === "npm" || k === "gh" ? c.cmd === k : c.args[0] === k)));
+  assert.deepEqual([...order].sort((x, y) => x - y), order);
+  assert.deepEqual(s.exec.calls.find((c) => c.args[0] === "rebase")!.args, ["rebase", "origin/main"]);
+  assert.equal(s.repo.listAttempts(s.step.id)[0]!.ci_result, "merged");
+  assert.equal(s.repo.getStep(s.step.id)!.pr_number, 5);
+});
+
+test("staged: a red local gate retries without touching GitHub or the runner lease", async () => {
+  const s = setupStaged([good], [1, 0], ["green"]);
+  assert.deepEqual(await runStep(s.deps, s.step.id), { status: "done", attempts: 2 });
+  assert.equal(s.repo.listAttempts(s.step.id)[0]!.ci_result, "local_failed");
+  assert.match(s.runs[1]!.prompt, /\$ npm test \(exit 1\)[\s\S]*not ok 1/);
+  assert.equal(s.exec.calls.filter((c) => c.args[0] === "push" && !c.args.includes("--delete")).length, 1);
+  assert.equal(s.acquires(), 1);
+});
+
+test("staged: a red CI reruns the local gate before the next push and reuses the PR", async () => {
+  const s = setupStaged([good], [0, 0], ["red", "green"]);
+  assert.deepEqual(await runStep(s.deps, s.step.id), { status: "done", attempts: 2 });
+  assert.equal(s.exec.calls.filter((c) => c.cmd === "npm").length, 2);
+  assert.equal(s.exec.calls.filter((c) => c.args[1] === "create").length, 1);
+  assert.match(s.runs[1]!.prompt, /lint fail/);
+  assert.equal(s.acquires(), 2);
+});
+
+test("staged: a rebase conflict aborts the rebase and counts as local_conflict", async () => {
+  const s = setupStaged([good], [0], ["green"], true, ["conflict", "ok"]);
+  assert.deepEqual(await runStep(s.deps, s.step.id), { status: "done", attempts: 2 });
+  assert.equal(s.repo.listAttempts(s.step.id)[0]!.ci_result, "local_conflict");
+  assert.ok(s.exec.calls.some((c) => c.args[0] === "rebase" && c.args[1] === "--abort"));
+});
+
+test("staged with auto_merge off: CI green leaves the PR open and the branch for review", async () => {
+  const s = setupStaged([good], [0], ["green"], false);
+  assert.deepEqual(await runStep(s.deps, s.step.id), { status: "done", attempts: 1 });
+  assert.equal(s.repo.listAttempts(s.step.id)[0]!.ci_result, "passed");
+  assert.ok(!s.exec.calls.some((c) => c.args[1] === "merge" || (c.args[0] === "worktree" && c.args[1] === "remove")));
 });

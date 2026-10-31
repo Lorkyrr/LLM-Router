@@ -96,3 +96,9 @@ test("checks not registered yet are polled again instead of failing the PR", asy
   assert.deepEqual(await verifyAndMerge(exec, { ...o, pollMs: 0 }), { result: "merged" });
   assert.equal(n, 3);
 });
+
+test("autoMerge false stops after green checks with the PR open", async () => {
+  const exec = fakeExec([view("MERGEABLE"), { when: sub("pr", "checks"), reply: ok() }]);
+  assert.deepEqual(await verifyAndMerge(exec, { ...o, autoMerge: false }), { result: "passed" });
+  assert.ok(!exec.calls.some((c) => c.args[1] === "merge"));
+});

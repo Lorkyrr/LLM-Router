@@ -34,10 +34,14 @@ Conecte `npm start` pelo cliente MCP via stdio. A inicialização faz pings pago
 
 ## Modo local (sem GitHub nem CI)
 
-`ROUTER_LOCAL_TEST="npm test"` (ou `verify.mode: local` + `verify.test_cmd` no catálogo) faz `run_plan` trabalhar só com Git local. Cada passo roda num worktree em `.worktrees/` e o comando de teste no worktree decide o resultado. Teste vermelho reentra na escada de esforço com a saída no prompt. Teste verde faz rebase no base e fast-forward no checkout do projeto, serializado entre passos paralelos. Sem `git fetch`, push, PR nem `gh`.
+`ROUTER_LOCAL_TEST="npm run typecheck && npm test"` (ou `verify.mode: local` + `verify.local.cmds` no catálogo; comandos em ordem, o primeiro que falhar encerra) faz `run_plan` trabalhar só com Git local. Cada passo roda num worktree em `.worktrees/` e o comando de teste no worktree decide o resultado. Teste vermelho reentra na escada de esforço com a saída no prompt. Teste verde faz rebase no base e fast-forward no checkout do projeto, serializado entre passos paralelos. Sem `git fetch`, push, PR nem `gh`.
+
+### Modo staged: gate local e depois PR + CI + auto-merge
+
+`ROUTER_VERIFY_MODE=staged` (ou `verify.mode: staged`) usa os mesmos `verify.local.cmds` como **estágio 1**: depois de `git fetch` e rebase em `origin/<base>`, os comandos rodam no worktree. Vermelho ou conflito volta ao agente (`ci_result` `local_failed`/`local_conflict`) sem push, PR nem runner. Verde faz o **estágio 2**: push, PR, o workflow `router-verify` e merge. Uma falha só do CI reentra no estágio 1 antes do novo push. O checkout do projeto não é tocado. Exige remoto, `gh` autenticado e o runner de CI; veja `docs/staged-verify-design.md`.
 
 - O checkout de `ROUTER_REPO_DIR` precisa estar no branch base (`main`, ou `ROUTER_BASE`); caso contrário o passo falha em vez de mesclar no branch errado. Arquivos não commitados que colidam com o merge também o fazem falhar.
-- `verify.auto_merge: false` deixa o branch `router/step-*` e o worktree para revisão; o passo conta como `done`. No modo `pr` essa opção ainda não é aplicada.
+- `verify.auto_merge: false` deixa o branch `router/step-*` e o worktree para revisão; o passo conta como `done`. Nos modos `pr` e `staged` o PR fica aberto após o CI verde, sem merge.
 - Os testes não rodam de novo após o rebase. Teste com git real e agente falso: `src/runner/run-step.local.test.ts`. Nenhum modelo real foi usado nesse fluxo.
 
 ## Conexão ao Claude Code

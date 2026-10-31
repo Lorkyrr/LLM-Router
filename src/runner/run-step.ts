@@ -3,14 +3,14 @@ import type { Config, Tier } from "../config.ts";
 import type { Adapter, AdapterName } from "../adapters/types.ts";
 import { availability } from "../catalog/check.ts";
 import type { Exec } from "../exec.ts";
-import { commitAll, publishBranch, startBranch } from "../git/branch.ts";
+import { commitAll, publishBranch, pushBranch, startBranch } from "../git/branch.ts";
 import { estimateCost } from "../policy/cost.ts";
 import { stepFor } from "../policy/escalate.ts";
 import type { Lease } from "./lease.ts";
 import { selectModel } from "../policy/select.ts";
 import type { Repo, Runner } from "../store/repo.ts";
-import { verifyAndMerge } from "../verify/ci.ts";
-import { verifyLocal } from "../verify/local.ts";
+import { verifyAndMerge, type Verdict } from "../verify/ci.ts";
+import { rebaseOnto, runLocalChecks, verifyLocal } from "../verify/local.ts";
 
 export type StepDeps = {
   cfg: Config;
@@ -37,7 +37,7 @@ const promptFor = (brief: string, lastFailure: string | null) =>
 
 export async function runStep(d: StepDeps, stepId: string): Promise<StepOutcome> {
   const { cfg, repo } = d;
-  const local = cfg.verify.mode === "local";
+  const mode = cfg.verify.mode;
   const step = repo.getStep(stepId);
   if (!step) throw new Error(`run-step: unknown step ${stepId}`);
   // Numeração continua de onde parou para a retomada de um passo failed/waiting_quota não repetir n.
@@ -59,7 +59,7 @@ export async function runStep(d: StepDeps, stepId: string): Promise<StepOutcome>
       worktree = join(d.repoDir, ".worktrees", branch.replaceAll("/", "-"));
     } else {
       branch = `router/step-${step.id.slice(0, 8)}`;
-      worktree = await startBranch(d.exec, { repoDir: d.repoDir, branch, base: d.base, local });
+      worktree = await startBranch(d.exec, { repoDir: d.repoDir, branch, base: d.base, local: mode === "local" });
       repo.updateStep(stepId, { branch });
     }
 
@@ -115,37 +115,51 @@ export async function runStep(d: StepDeps, stepId: string): Promise<StepOutcome>
       }
 
       const title = step.brief.split("\n")[0]!.slice(0, 72);
-      let verdict;
-      if (local) {
-        if (!(await commitAll(d.exec, { worktree, title }))) {
-          lastFailure = "agent made no changes";
-          finish({ failure_reason: lastFailure });
-          rung++;
-          continue;
-        }
-        verdict = await verifyLocal(d.exec, {
-          worktree, repoDir: d.repoDir, branch, base: d.base, testCmd: cfg.verify.test_cmd!, autoMerge: cfg.verify.auto_merge,
-          timeoutMs: CI_TIMEOUT_MS,
-        });
+      // local e staged commitam antes do gate; o modo pr deixa o commit para o publishBranch.
+      if (mode !== "pr" && !(await commitAll(d.exec, { worktree, title }))) {
+        lastFailure = "agent made no changes";
+        finish({ failure_reason: lastFailure });
+        rung++;
+        continue;
+      }
+      const localOpts = { worktree, cmds: cfg.verify.local?.cmds ?? [], timeoutMs: (cfg.verify.local?.timeout_s ?? 0) * 1000 };
+      let verdict: Verdict;
+      let stage = "";
+      if (mode === "local") {
+        verdict = await verifyLocal(d.exec, { ...localOpts, repoDir: d.repoDir, branch, base: d.base, autoMerge: cfg.verify.auto_merge });
       } else {
-        const pub = await publishBranch(d.exec, {
-          worktree, branch, base: d.base, title, body: step.brief,
-          ...(prNumber ? { pr_number: prNumber } : {}),
-        });
-        if (!pub.changed) {
-          lastFailure = "agent made no changes";
-          finish({ failure_reason: lastFailure });
-          rung++;
-          continue;
+        // Estágio 1 (staged): rebase no remoto e checks locais; nada vai ao GitHub antes de passar.
+        let gate: Verdict | null = null;
+        if (mode === "staged") {
+          const fetched = await d.exec("git", ["fetch", "origin", d.base], { cwd: worktree });
+          if (fetched.code !== 0) throw new Error(`git fetch failed: ${fetched.stderr || fetched.stdout}`);
+          const rebased = await rebaseOnto(d.exec, { worktree, onto: `origin/${d.base}` });
+          const checks = rebased.result === "conflict" ? rebased : await runLocalChecks(d.exec, localOpts);
+          if (checks.result !== "passed") gate = checks;
         }
-        prNumber = pub.pr_number;
-        repo.updateStep(stepId, { pr_number: prNumber });
+        if (gate) {
+          verdict = gate;
+          stage = "local_";
+        } else {
+          // Estágio 2 (e o modo pr): PR + CI do GitHub + merge.
+          const pushOpts = { worktree, branch, base: d.base, title, body: step.brief, ...(prNumber ? { pr_number: prNumber } : {}) };
+          const pub = mode === "pr" ? await publishBranch(d.exec, pushOpts) : await pushBranch(d.exec, pushOpts);
+          if (!pub.changed) {
+            lastFailure = "agent made no changes";
+        finish({ failure_reason: lastFailure });
+            rung++;
+            continue;
+          }
+          prNumber = pub.pr_number;
+          repo.updateStep(stepId, { pr_number: prNumber });
 
-        // O runner local só fica ligado enquanto o CI deste PR roda.
-        await d.lease?.acquire();
-        verdict = await verifyAndMerge(d.exec, {
-          cwd: worktree, pr: prNumber, deleteBranch: cfg.verify.delete_branch, timeoutMs: CI_TIMEOUT_MS, branch,
-        }).finally(() => d.lease?.release());
+          // O runner local só fica ligado enquanto o CI deste PR roda.
+          await d.lease?.acquire();
+          verdict = await verifyAndMerge(d.exec, {
+            cwd: worktree, pr: prNumber, deleteBranch: cfg.verify.delete_branch, autoMerge: cfg.verify.auto_merge,
+            timeoutMs: CI_TIMEOUT_MS, branch,
+          }).finally(() => d.lease?.release());
+        }
       }
       if (verdict.result === "passed") {
         // auto_merge off: o trabalho fica no branch/worktree para revisão; limpar apagaria o resultado.
@@ -162,7 +176,7 @@ export async function runStep(d: StepDeps, stepId: string): Promise<StepOutcome>
         return { status: "done", attempts: n };
       }
       lastFailure = verdict.reason;
-      finish({ ci_result: verdict.result, failure_reason: verdict.reason });
+      finish({ ci_result: stage + verdict.result, failure_reason: verdict.reason });
       rung++;
     }
   } catch (e) {
