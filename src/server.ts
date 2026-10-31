@@ -8,6 +8,7 @@ import type { Exec } from "./exec.ts";
 import { plan } from "./planner/planner.ts";
 import { strongBaseline } from "./policy/cost.ts";
 import { selectModel } from "./policy/select.ts";
+import { dispatchRelease, syncReleased } from "./runner/release.ts";
 import { runPlan } from "./runner/run-plan.ts";
 import type { Lease } from "./runner/lease.ts";
 import type { Runner, Repo } from "./store/repo.ts";
@@ -95,6 +96,22 @@ export function makeServer(ctx: Ctx): McpServer {
         started: steps.filter((s) => s.depends_on.length === 0).map((s) => s.seq),
         waiting: steps.filter((s) => s.depends_on.length > 0).map((s) => s.seq),
       };
+    }),
+  );
+
+  server.registerTool(
+    "release",
+    {
+      description: "Signal that the open router PRs (staged mode) may be compared, CI-tested, merged and their branches deleted by the GitHub workflow. sync_only just refreshes local state from GitHub.",
+      inputSchema: { sync_only: z.boolean().nullish() },
+    },
+    tool(async ({ sync_only }) => {
+      const d = { exec: ctx.exec, repo, repoDir: ctx.repoDir, base: ctx.base, lease: ctx.lease };
+      if (sync_only) return await syncReleased(d);
+      const { prs, done } = await dispatchRelease(d);
+      // Sem await: o workflow leva minutos; `status` e `release {sync_only}` mostram o resultado.
+      done.catch((e) => console.error("release:", e));
+      return { dispatched: prs, next: "status" };
     }),
   );
 

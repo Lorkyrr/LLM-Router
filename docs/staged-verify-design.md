@@ -1,5 +1,7 @@
 # Verificação em dois estágios (implementado)
 
+> **Revisão:** o estágio 2 deixou de esperar CI e merge ao abrir o PR. O PR abre depois do gate local e fica `pr_open`; CI, comparação entre PRs, merge e remoção do branch só acontecem quando o usuário sinaliza (`release`, que dispara `router-release.yml`). O diagrama abaixo mostra o desenho original; onde ele diz "workflow router-verify roda" e "verifyAndMerge", leia "espera o sinal".
+
 Implementado em `verify.mode: staged` (`src/runner/run-step.ts`, `src/verify/local.ts`). Decisões em aberto resolvidas com as sugestões: o gate local roda só teste e typecheck (kind fica no estágio 2), uma falha do CI reroda o gate local antes do novo push, e há um só teto de tentativas (`max_attempts`). A chave de configuração é `verify.local.cmds`; `ROUTER_LOCAL_TEST` aceita comandos separados por `&&` e `ROUTER_VERIFY_MODE=staged` escolhe o modo.
 
 Objetivo: o código do agente só chega ao GitHub depois de passar num CI local; só então roda o workflow de auto-merge do repositório. Falha barata (local) nunca gasta PR, runner nem fila de CI.
