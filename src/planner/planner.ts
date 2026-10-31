@@ -69,7 +69,7 @@ export async function plan(
   repo.updateTask(taskId, { status: "planning" });
 
   for (let tries = 0; tries < MAX_TRIES; ) {
-    const name = selectModel(cfg, "strong", availability(repo));
+    const name = selectModel(cfg, "strong", availability(repo), "planning");
     if (!name) {
       repo.updateTask(taskId, { status: "waiting_quota" });
       return [];
@@ -80,6 +80,8 @@ export async function plan(
       effort: cfg.phases.planning.effort,
       prompt: prompt(task.request),
       cwd: opts.cwd,
+      readOnly: true,
+      timeoutMs: 5 * 60_000,
     });
     if (!r.ok && r.quota_exhausted) {
       markExhausted(cfg, repo, name);

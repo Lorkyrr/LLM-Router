@@ -2,8 +2,7 @@ import { mkdirSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
-import { makeClaudeCode } from "./adapters/claude-code.ts";
-import { makeGrokBuild } from "./adapters/grok-build.ts";
+import { makeAdapters } from "./adapters/registry.ts";
 import { checkModels, recheckUnavailable } from "./catalog/check.ts";
 import { flush, type Transport } from "./channel/relay.ts";
 import { loadConfig } from "./config.ts";
@@ -45,7 +44,7 @@ async function main() {
       makeLease(realExec, { up: join(INSTALL_DIR, "ci/runner-up.sh"), down: join(INSTALL_DIR, "ci/runner-down.sh"), args: [instance] }),
     (e) => (console.error(e instanceof Error ? e.message : e), undefined),
   );
-  const adapters = { "claude-code": makeClaudeCode(realExec), "grok-build": makeGrokBuild(realExec) };
+  const adapters = makeAdapters(realExec);
 
   // stdout é o canal MCP: todo log vai para stderr.
   const server = makeServer({
@@ -54,9 +53,11 @@ async function main() {
   });
   await server.connect(new StdioServerTransport());
 
-  checkModels(cfg, adapters, repo).catch((e) => console.error("check_models:", e));
+  // Handshake/diagnóstico podem ser feitos sem chamadas pagas.
+  const automaticChecks = process.env.ROUTER_CHECK_MODELS !== "manual";
+  if (automaticChecks) checkModels(cfg, adapters, repo).catch((e) => console.error("check_models:", e));
   setInterval(() => flush(repo, grokBot).catch((e) => console.error("flush:", e)), FLUSH_INTERVAL_MS).unref();
-  setInterval(() => recheckUnavailable(cfg, adapters, repo).catch((e) => console.error("recheck:", e)), RECHECK_INTERVAL_MS).unref();
+  if (automaticChecks) setInterval(() => recheckUnavailable(cfg, adapters, repo).catch((e) => console.error("recheck:", e)), RECHECK_INTERVAL_MS).unref();
 }
 
 main().catch((e) => {

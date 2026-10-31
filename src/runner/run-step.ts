@@ -71,7 +71,11 @@ export async function runStep(d: StepDeps, stepId: string): Promise<StepOutcome>
         repo.updateStep(stepId, { status: "failed" });
         return { status: "failed", attempts: n, reason: lastFailure ?? "no attempts left" };
       }
-      const name = selectModel(cfg, rungStep.tier, availability(repo));
+      const taskPhase = repo.getTask(step.task_id)?.phase;
+      // Passos mid de um plano strong são implementação; escalada cheap→mid também.
+      const phase = !taskPhase ? undefined : cfg.phases[taskPhase].tier === rungStep.tier ? taskPhase
+        : rungStep.tier === "mid" ? "implementing" : rungStep.tier === "cheap" ? "simple_edit" : "integration";
+      const name = selectModel(cfg, rungStep.tier, availability(repo), phase);
       if (!name) {
         repo.updateStep(stepId, { status: "waiting_quota" });
         return { status: "waiting_quota", attempts: n };

@@ -1,8 +1,7 @@
 // Gasta tokens reais (um Haiku por caso). Uso: node --import tsx test/bench-triage.ts [judge-cases.json]
 import { readFileSync, writeFileSync } from "node:fs";
 import { homedir, tmpdir } from "node:os";
-import { makeClaudeCode } from "../src/adapters/claude-code.ts";
-import { makeGrokBuild } from "../src/adapters/grok-build.ts";
+import { makeAdapters } from "../src/adapters/registry.ts";
 import { loadConfig, type Effort } from "../src/config.ts";
 import { realExec } from "../src/exec.ts";
 import { openDb } from "../src/store/db.ts";
@@ -19,7 +18,7 @@ const cases: Case[] = JSON.parse(readFileSync(casesPath, "utf8")).cases;
 const cfg = loadConfig(new URL("../config/router.yaml", import.meta.url).pathname);
 // Banco em memória: o benchmark não deve tocar no estado real de disponibilidade dos modelos.
 const repo = makeRepo(openDb());
-const adapters = { "claude-code": makeClaudeCode(realExec), "grok-build": makeGrokBuild(realExec) };
+const adapters = makeAdapters(realExec);
 
 type Result = Case & { predicted: string; right: boolean };
 const results: Result[] = [];

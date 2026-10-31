@@ -13,16 +13,25 @@ export type Phase = (typeof PHASES)[number];
 const tier = z.enum(TIERS);
 const effort = z.enum(EFFORTS);
 const step = z.object({ tier, effort });
+const phasePolicy = step.extend({ prefer: z.array(z.string()).default([]) });
 const rank = (t: Tier) => TIERS.indexOf(t);
 
 // USD por 1M de tokens; o custo real vem do CLI, isto só serve de estimativa e da linha de base "tudo no forte".
-const price = z.object({ input: z.number(), output: z.number(), cache_read: z.number(), cache_write: z.number() });
+const rate = z.number().nonnegative();
+const price = z.object({ input: rate, output: rate, cache_read: rate, cache_write: rate });
 
 const model = z.object({
-  adapter: z.enum(["claude-code", "grok-build"]),
+  adapter: z.enum(["claude-code", "grok-build", "codex"]),
   id: z.string().min(1),
   tier,
   price,
+  enabled: z.boolean().default(true),
+  guidance: z.string().min(1).optional(),
+  pricing: z.object({
+    source: z.url(),
+    checked_at: z.iso.date(),
+    basis: z.literal("standard_short_context"),
+  }).optional(),
 });
 
 const schema = z
@@ -34,7 +43,7 @@ const schema = z
       mid: z.array(z.string()).min(1),
       strong: z.array(z.string()).min(1),
     }),
-    phases: z.object(Object.fromEntries(PHASES.map((p) => [p, step])) as Record<Phase, typeof step>),
+    phases: z.object(Object.fromEntries(PHASES.map((p) => [p, phasePolicy])) as Record<Phase, typeof phasePolicy>),
     escalation: z.object({
       max_attempts: z.number().int().positive(),
       ladder: z.object({
@@ -65,6 +74,14 @@ const schema = z
     }
     if (!cfg.models[cfg.triage.model]) {
       ctx.addIssue({ code: "custom", message: `triage.model "${cfg.triage.model}" is not in models` });
+    }
+    for (const p of PHASES) {
+      const policy = cfg.phases[p];
+      for (const name of policy.prefer) {
+        if (!cfg.tiers[policy.tier].includes(name)) {
+          ctx.addIssue({ code: "custom", message: `phases.${p}.prefer references model "${name}" outside tier ${policy.tier}` });
+        }
+      }
     }
     for (const t of TIERS) {
       const steps = cfg.escalation.ladder[t];

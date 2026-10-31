@@ -44,7 +44,7 @@ function setup(agent: RunResult[], ci: Ci[], tier: Tier = "mid", changed: boolea
     { when: (c) => a(c, "pr", "checks"), reply: () => ({ code: ci[round - 1] === "red" ? 1 : 0, stdout: "lint fail", stderr: "" }) },
     { when: (c) => a(c, "pr", "merge"), reply: ok() },
   ]);
-  const deps = { cfg, adapters: { "claude-code": adapter, "grok-build": adapter }, repo, exec, repoDir: "/repo", base: "main", runner: "hosted" as const };
+  const deps = { cfg, adapters: { "claude-code": adapter, "grok-build": adapter, codex: adapter }, repo, exec, repoDir: "/repo", base: "main", runner: "hosted" as const };
   return { deps, repo, step, runs, exec };
 }
 
@@ -59,6 +59,14 @@ test("green on the first attempt: merged, step done, tokens and cost recorded", 
   assert.equal(a!.output_tokens, 20);
   assert.equal(s.repo.getStep(s.step.id)!.pr_number, 5);
   assert.equal(s.repo.getStep(s.step.id)!.status, "done");
+});
+
+test("implementation steps from a Claude plan select Codex using the phase policy", async () => {
+  const s = setup([good], ["green"]);
+  s.repo.updateTask(s.step.task_id, { phase: "planning" });
+  assert.deepEqual(await runStep(s.deps, s.step.id), { status: "done", attempts: 1 });
+  assert.equal(s.repo.listAttempts(s.step.id)[0]!.adapter, "codex");
+  assert.equal(s.runs[0]!.model, "gpt-6.1-sol");
 });
 
 test("red CI retries in a fresh run with higher effort and the failure in the prompt", async () => {
@@ -97,7 +105,7 @@ test("exhausted quota moves to the next model of the same tier without escalatin
 
 test("whole tier out of quota waits instead of dropping a tier", async () => {
   const s = setup([bad("usage limit reached", true)], [], "mid");
-  assert.deepEqual(await runStep(s.deps, s.step.id), { status: "waiting_quota", attempts: 1 });
+  assert.deepEqual(await runStep(s.deps, s.step.id), { status: "waiting_quota", attempts: cfg.tiers.mid.filter((n) => cfg.models[n]!.enabled).length });
   assert.equal(s.repo.getStep(s.step.id)!.status, "waiting_quota");
 });
 
@@ -111,7 +119,7 @@ test("an agent that changes nothing fails the attempt", async () => {
 test("cost falls back to the price table when the CLI gives none", async () => {
   const s = setup([{ ...good, cost_usd: null }], ["green"]);
   await runStep(s.deps, s.step.id);
-  assert.equal(s.repo.listAttempts(s.step.id)[0]!.est_cost_usd, (10 * 3 + 20 * 15) / 1e6);
+  assert.equal(s.repo.listAttempts(s.step.id)[0]!.est_cost_usd, (10 * 2 + 20 * 10) / 1e6);
 });
 
 test("the local runner is held only while CI runs, once per attempt", async () => {
@@ -146,7 +154,7 @@ test("an exception in verification releases the runner and fails the step with t
 test("an adapter that throws fails the step and closes the attempt", async () => {
   const s = setup([good], ["green"]);
   const adapter: Adapter = { run: async () => { throw new Error("spawn EAGAIN"); }, ping: async () => ({ available: true, quota_state: "ok" }) };
-  const r = await runStep({ ...s.deps, adapters: { "claude-code": adapter, "grok-build": adapter } }, s.step.id);
+  const r = await runStep({ ...s.deps, adapters: { "claude-code": adapter, "grok-build": adapter, codex: adapter } }, s.step.id);
   assert.deepEqual(r, { status: "failed", attempts: 1, reason: "spawn EAGAIN" });
   const [a] = s.repo.listAttempts(s.step.id);
   assert.ok(a!.finished_at);
