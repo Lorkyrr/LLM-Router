@@ -21,4 +21,14 @@ test("realExec returns code 127 when the binary is missing", async () => {
 test("realExec kills the process on timeout", async () => {
   const r = await realExec("node", ["-e", "setTimeout(()=>{},10000)"], { timeoutMs: 200 });
   assert.notEqual(r.code, 0);
+  assert.equal(r.code, 124);
+});
+
+test("realExec preserves UTF-8 input, arguments and both output streams", async () => {
+  const program = "let s='';process.stdin.setEncoding('utf8');process.stdin.on('data',c=>s+=c);process.stdin.on('end',()=>{process.stdout.write(s+process.argv[1]);process.stderr.write('aviso: ação')})";
+  const literal = " $HOME `not-a-command` ";
+  const r = await realExec(process.execPath, ["-e", program, literal], { input: "integração 🧪" });
+  assert.equal(r.code, 0);
+  assert.equal(r.stdout, "integração 🧪" + literal);
+  assert.equal(r.stderr, "aviso: ação");
 });
