@@ -6,6 +6,7 @@ import { makeAdapters } from "./adapters/registry.ts";
 import { checkModels, recheckUnavailable } from "./catalog/check.ts";
 import { flush, type Transport } from "./channel/relay.ts";
 import { loadConfig } from "./config.ts";
+import { resolveBase } from "./git/branch.ts";
 import { realExec } from "./exec.ts";
 import { makeLease } from "./runner/lease.ts";
 import { makeServer } from "./server.ts";
@@ -55,7 +56,7 @@ async function main() {
 
   // stdout é o canal MCP: todo log vai para stderr.
   const server = makeServer({
-    cfg, adapters, repo, exec: realExec, runner: "self_hosted", base: process.env.ROUTER_BASE ?? "main", transport: grokBot,
+    cfg, adapters, repo, exec: realExec, runner: "self_hosted", base: await resolveBase(realExec, { repoDir, local: cfg.verify.mode === "local", configured: process.env.ROUTER_BASE }), transport: grokBot,
     repoDir, lease,
   });
   await server.connect(new StdioServerTransport());

@@ -7,6 +7,16 @@ async function must(exec: Exec, cmd: string, args: string[], cwd: string): Promi
   return r.stdout;
 }
 
+// Base explícita (ROUTER_BASE) vence. Modo local sem ela segue o branch do checkout, que é onde o ff-merge acontece
+// (verifyLocal exige HEAD == base); um "main" fixo criava worktrees a partir de um main local defasado.
+export async function resolveBase(exec: Exec, o: { repoDir: string; local: boolean; configured?: string }): Promise<string> {
+  if (o.configured) return o.configured;
+  if (!o.local) return "main";
+  const r = await exec("git", ["rev-parse", "--abbrev-ref", "HEAD"], { cwd: o.repoDir });
+  const head = r.stdout.trim();
+  return r.code === 0 && head && head !== "HEAD" ? head : "main";
+}
+
 export async function startBranch(exec: Exec, o: { repoDir: string; branch: string; base: string; local?: boolean; from?: string }): Promise<string> {
   const worktree = join(o.repoDir, ".worktrees", o.branch.replaceAll("/", "-"));
   // Parte do remoto atualizado: passos dependentes precisam enxergar o que já foi mergeado no base.

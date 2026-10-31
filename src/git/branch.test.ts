@@ -1,7 +1,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { fakeExec, ok, fail } from "../../test/fixtures/fake-exec.ts";
-import { startBranch, publishBranch, commitAll } from "./branch.ts";
+import { startBranch, publishBranch, commitAll, resolveBase } from "./branch.ts";
 
 const is = (cmd: string, ...sub: string[]) => (c: { cmd: string; args: string[] }) =>
   c.cmd === cmd && sub.every((s, i) => c.args[i] === s);
@@ -86,4 +86,13 @@ test("commitAll commits when there are changes and reports false when there are 
   e.calls.length = 0;
   assert.equal(await commitAll(e, { worktree: "/w", title: "t" }), false);
   assert.ok(!e.calls.some((c) => c.args[0] === "commit"));
+});
+
+test("resolveBase: explicit value wins; local mode follows the checked-out branch; PR mode and detached HEAD default to main", async () => {
+  const head = (out: string) => fakeExec([{ when: is("git", "rev-parse"), reply: ok(out) }]);
+  assert.equal(await resolveBase(head("feature/x\n"), { repoDir: "/r", local: true, configured: "dev" }), "dev");
+  assert.equal(await resolveBase(head("feature/x\n"), { repoDir: "/r", local: true }), "feature/x");
+  assert.equal(await resolveBase(head("feature/x\n"), { repoDir: "/r", local: false }), "main");
+  assert.equal(await resolveBase(head("HEAD\n"), { repoDir: "/r", local: true }), "main");
+  assert.equal(await resolveBase(fakeExec([{ when: is("git"), reply: fail("not a repo") }]), { repoDir: "/r", local: true }), "main");
 });
