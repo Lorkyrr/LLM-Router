@@ -1,21 +1,30 @@
 name: router-verify
 
-on: pull_request
+# Por enquanto só dispara manualmente, com aprovação do usuário:
+#   gh workflow run router-verify.yml -f ref=<branch> -f base=main
+on:
+  workflow_dispatch:
+    inputs:
+      ref:
+        description: Branch a testar
+        required: true
+      base:
+        description: Branch base
+        default: main
 
 jobs:
   verify:
-    # PRs router/* esperam o sinal do usuário (router-release.yml); aqui só rodam os demais.
-    if: ${{ !startsWith(github.head_ref, 'router/') }}
     # Runner no próprio PC (CPU), instalado por ci/runner-install.sh.
     runs-on: [self-hosted, router-ci]
     steps:
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0
+          ref: ${{ inputs.ref }}
       - uses: actions/setup-node@v4
         with:
           node-version: 26
       - name: CI
         env:
-          BASE_REF: ${{ github.base_ref }}
+          BASE_REF: ${{ inputs.base }}
         run: ci/pr-ci.sh
