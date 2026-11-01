@@ -18,7 +18,15 @@ Diagnóstico independente com `socket.getaddrinfo`: tanto `api.anthropic.com` qu
 
 ## Contrato de cooperação v1
 
-**Status: proposto, aguardando aprovação do usuário.** Por enquanto só descreve o contrato; nada do que segue foi implementado. Os pontos de código citados são os que vão mudar quando o contrato for aprovado: `src/triage/decompose.ts` (schema e prompt), `src/planner/planner.ts` (`storeItems`), `src/runner/run-plan.ts` (agendamento e revisão), além de `src/store/db.ts`/`repo.ts` e da ferramenta `status` em `src/server.ts`. A partir da aprovação, esta seção substitui a tabela "Responsabilidade por tarefa" abaixo, que fica como histórico.
+**Status em 2026-11-01: parcialmente implementado** no branch `feat/agent-cooperation` (testes com `fakeExec`, sem modelos pagos):
+
+- Papel (`role`) na decomposição e no banco (`steps.role`). A seleção por papel em `src/planner/selection.ts` usa o mais barato capaz, só `claude-code`/`codex`, e já inverte para Opus antes de Astra (pendência A aplicada no código). Os nomes de papel seguem `ROLES` do código (`triage`, `simple_edit`, `planning`, `implementing`, `investigation`, `integration`, `review`, `full_review`, `specialized`), não os da tabela §1.
+- Passagem de contexto: `run-plan.ts` grava `steps.handoff` (brief, diff, achados, autor, risco, revisão), e o dependente recebe esse JSON no prompt.
+- Revisão cruzada só com risco: risco inferido por heurística (`riskFor` em `run-plan.ts`, não pelo planner). Sonnet revisa Codex e Sol revisa Claude, em leitura, antes do gate e da publicação. Reprovação → reparo pontual → nova revisão → escada.
+- Paralelismo: passos independentes rodam juntos até `verify.max_parallel`.
+- "Agent made no changes": verifica o gate em vez de escalar (§5).
+
+Não implementado: `acceptance`, `output`, `risk`/`risk_reasons` declarados, `review_of`, `awaiting_review` (a revisão acontece dentro do passo, antes do merge) e saídas `brief`/`findings` read-only como subtarefas próprias. O restante desta seção continua sendo a proposta. Os pontos de código citados são os que vão mudar quando o contrato for aprovado: `src/triage/decompose.ts` (schema e prompt), `src/planner/planner.ts` (`storeItems`), `src/runner/run-plan.ts` (agendamento e revisão), além de `src/store/db.ts`/`repo.ts` e da ferramenta `status` em `src/server.ts`. A partir da aprovação, esta seção substitui a tabela "Responsabilidade por tarefa" abaixo, que fica como histórico.
 
 ### 1. Papéis
 
@@ -92,9 +100,10 @@ Mantém e generaliza o que `runStep` + `repairFor` já fazem:
 
 1. **Falha de gate** (`verdict.gate`) ou **achado de revisão**: primeiro um reparo pontual no mesmo worktree/branch. O prompt leva só o diagnóstico (últimas 60 linhas ou os achados) e o diff atual, com a instrução de não refazer nem ampliar o escopo. A classificação simples/complexa segue `repair.simple`: o simples vai para cheap (low, depois medium); o complexo fica na categoria original.
 2. Teto: `repair.max` (1) por falha; o reparo consome `escalation.max_attempts`.
-3. Se o reparo falhar, ou se a falha não for reparável (timeout, erro do agente, "agent made no changes", parser), aplica-se o comportamento atual: tentar outro modelo do mesmo degrau e só então subir na escada.
-4. Cota esgotada não é falha: marca o modelo e tenta o próximo da mesma categoria, sem gastar tentativa.
-5. Timeout não é sinal de modelo ruim. Consumo desconhecido continua `null`, nunca vira zero.
+3. Se o reparo falhar, ou se a falha não for reparável (timeout, erro do agente, parser), aplica-se o comportamento atual: tentar outro modelo do mesmo degrau e só então subir na escada.
+4. "Agent made no changes" não escala (implementado). O gate local verifica se a base, ou os commits de tentativas anteriores, já atendem. Se passar, o passo fica `done` com "already satisfied". Se não passar, há uma única nova tentativa com o mesmo modelo/esforço, com o que falta no prompt, e depois `failed`. O caso real foi o passo 4 deste plano: Sol commitou o trabalho antes de esgotar a cota, e Sonnet não tinha mais o que mudar em medium/high/xhigh.
+5. Cota esgotada não é falha: marca o modelo e tenta o próximo da mesma categoria, sem gastar tentativa.
+6. Timeout não é sinal de modelo ruim. Consumo desconhecido continua `null`, nunca vira zero.
 
 ### 6. Registro no banco compartilhado e exposição em `status`
 
@@ -149,7 +158,7 @@ Há um coordenador responsável pelo objetivo, orçamento de tentativas, depend�
 
 **Concorrente competitivo:** duas hipóteses ou soluções para o mesmo problema, em branches isoladas e no mesmo commit-base. Usar apenas quando a incerteza justificar duplicar consumo; não como padrão. Mesmo brief, critérios e limite de tentativas. Preferir primeiro diagnósticos em leitura. Comparar correção, testes, regressões, tempo e consumo total; escolher uma solução e integrar conscientemente qualquer parte útil da outra. Não fazer dois merges automáticos de soluções rivais.
 
-`runPlan` já agenda passos independentes por promessas e respeita `depends_on`; `startBranch` cria worktree por passo a partir de `origin/<base>`. Isso não detecta colisões de arquivos, não limita concorrência global e não implementa competição com escolha de vencedor. Passos dependentes esperam o anterior terminar, incluindo seu fluxo de merge. Paralelismo seguro exige briefs e dependências corretos; worktree sozinho não resolve conflitos semânticos.
+`runPlan` já agenda passos independentes por promessas e respeita `depends_on`; `startBranch` cria worktree por passo a partir de `origin/<base>`. A concorrência por plano é limitada por `verify.max_parallel` (entre planos não há limite global), e `fileDependencies` serializa passos que declaram o mesmo arquivo. Não há competição com escolha de vencedor. Passos dependentes esperam o anterior terminar, incluindo seu fluxo de merge. Paralelismo seguro exige briefs e dependências corretos; worktree sozinho não resolve conflitos semânticos.
 
 ## Compatibilidade e limites
 
