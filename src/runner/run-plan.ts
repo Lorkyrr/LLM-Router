@@ -87,7 +87,7 @@ function executionFor(d: StepDeps, step: Step): StepExecution {
         save();
         d.repo.finishAttempt(attempt.id, {
           ...reviewed.usage, est_cost_usd: reviewed.cost_usd ?? estimateCost(model.price, reviewed.usage),
-          ci_result: reviewed.quota_exhausted ? "review_waiting_quota" : failure ? "review_failed" : "review_passed",
+          ci_result: `${reviewed.quota_exhausted ? "review_waiting_quota" : failure ? "review_failed" : "review_passed"}${model.adapter === provider ? ":same_provider_review" : ""}`,
           failure_reason: failure ?? null,
         });
         if (reviewed.quota_exhausted) continue; // próximo revisor candidato

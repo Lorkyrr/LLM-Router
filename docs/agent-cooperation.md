@@ -26,7 +26,7 @@ Diagnóstico independente com `socket.getaddrinfo`: tanto `api.anthropic.com` qu
 - Paralelismo: passos independentes rodam juntos até `verify.max_parallel`.
 - "Agent made no changes": verifica o gate em vez de escalar (§5).
 
-Não implementado: `acceptance`, `output`, `risk`/`risk_reasons` declarados, `review_of`, `awaiting_review` (a revisão acontece dentro do passo, antes do merge) e saídas `brief`/`findings` read-only como subtarefas próprias. O restante desta seção continua sendo a proposta. Os pontos de código citados são os que vão mudar quando o contrato for aprovado: `src/triage/decompose.ts` (schema e prompt), `src/planner/planner.ts` (`storeItems`), `src/runner/run-plan.ts` (agendamento e revisão), além de `src/store/db.ts`/`repo.ts` e da ferramenta `status` em `src/server.ts`. A partir da aprovação, esta seção substitui a tabela "Responsabilidade por tarefa" abaixo, que fica como histórico.
+Implementado: `acceptance`, `risk`/`risk_reasons` declarados e `awaiting_review` (step e task; sem revisor disponível, não satisfaz `depends_on`; a CLI sai com código 1). Não implementado: `output`, `review_of` (a revisão acontece dentro do passo, antes do merge) e saídas `brief`/`findings` read-only como subtarefas próprias. O restante desta seção continua sendo a proposta. Os pontos de código citados são os que vão mudar quando o contrato for aprovado: `src/triage/decompose.ts` (schema e prompt), `src/planner/planner.ts` (`storeItems`), `src/runner/run-plan.ts` (agendamento e revisão), além de `src/store/db.ts`/`repo.ts` e da ferramenta `status` em `src/server.ts`. A partir da aprovação, esta seção substitui a tabela "Responsabilidade por tarefa" abaixo, que fica como histórico.
 
 ### 1. Papéis
 
@@ -88,7 +88,7 @@ Regras:
 
 - `risk = low`: sem revisão por modelo. O gate (local/CI) é a única verificação. Isso cobre `trivial_edit` e a maioria dos `implement`.
 - `risk = high`: o `storeItems` insere logo após a subtarefa uma subtarefa `review` com `review_of`, `depends_on: [seq]` e `output: findings`.
-- **Fornecedor diferente:** na hora de agendar, o revisor é escolhido pela §3 com um filtro extra: `adapter` diferente do adaptador da última tentativa que passou no gate da subtarefa revisada. Se não houver modelo capaz do outro fornecedor disponível, a revisão fica em `waiting_quota`. Não cai para o mesmo fornecedor em silêncio.
+- **Fornecedor diferente:** na hora de agendar, o revisor é escolhido pela §3 com um filtro extra: `adapter` diferente do adaptador da última tentativa que passou no gate da subtarefa revisada. Ordem de preferência: par do outro fornecedor, outro modelo mid de outro fornecedor, e por último outro modelo mid do mesmo fornecedor. Neste último caso a revisão deixa de ser cruzada: o attempt `review` recebe `ci_result` com sufixo `:same_provider_review` e o `reason` registra o autor. Sem nenhum revisor disponível o passo fica em `awaiting_review`; a retomada chama só a revisão sobre o commit gravado, sem repetir o agente.
 - **Sem merge antes da revisão:** a subtarefa de risco, depois de passar no gate, termina em `awaiting_review` (branch e commit gravados, sem merge e sem PR para release), do mesmo jeito que `pr_open` já faz no modo staged. Os dependentes dela esperam o merge; `awaiting_review` não satisfaz `depends_on`.
 - O revisor recebe o snapshot (commit), o brief, o `acceptance` e a saída dos checks; não executa testes nem edita.
 - `approve`: segue para o fluxo normal de merge/publicação da subtarefa revisada.

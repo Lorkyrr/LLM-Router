@@ -155,10 +155,11 @@ for (const unavailable of ["disabled", "exhausted", "quota"] as const) {
     }
     const deps = withReviews(s, () => bad(true));
     if (unavailable === "disabled") deps.cfg = { ...cfg, models: { ...cfg.models, "sonnet-5-5": { ...cfg.models["sonnet-5-5"]!, enabled: false } } };
-    assert.deepEqual(await runPlan(deps, s.task.id), { done: [], failed: [], blocked: [2], waiting_quota: [1] });
+    assert.deepEqual(await runPlan(deps, s.task.id), { done: [], failed: [], blocked: [2], waiting_quota: [], awaiting_review: [1] });
+    assert.equal(s.repo.getTask(s.task.id)!.status, "awaiting_review");
     assert.ok(!s.deps.exec.calls.some(c => c.cmd === "gh"));
     assert.ok(!s.started.includes("passo 2"));
-    assert.equal(s.runs.filter(r => r.readOnly).length, unavailable === "quota" ? 1 : 0);
+    assert.equal(s.runs.filter(r => r.readOnly).length > 0, unavailable === "quota");
     assert.ok(s.repo.listAttempts(step.id).every(a => a.finished_at));
   });
 }
@@ -174,6 +175,54 @@ test("risk in the actual diff requires review even if the brief and declared fil
   ]);
   assert.deepEqual((await runPlan({ ...deps, exec }, s.task.id)).done, [1]);
   assert.equal(reviews, 1);
+});
+
+test("awaiting_review resumes with only the review on the recorded commit, then merges", async () => {
+  const s = setup();
+  const step = risky(s);
+  assert.deepEqual((await runPlan(withReviews(s, () => bad(true)), s.task.id)).awaiting_review, [1]);
+  const agentRuns = s.runs.filter(r => !r.readOnly).length;
+  assert.equal(s.repo.getStep(step.id)!.status, "awaiting_review");
+  const out = await runPlan(withReviews(s, () => ({ ...good, text: '{"approved":true,"findings":[]}' })), s.task.id);
+  assert.deepEqual(out.done, [1]);
+  assert.equal(s.runs.filter(r => !r.readOnly).length, agentRuns);
+});
+
+test("a rerun with no new changes still reviews the unreviewed risky commit before merging", async () => {
+  const s = setup();
+  const step = risky(s);
+  s.repo.updateStep(step.id, { status: "waiting_quota", branch: "router/step-abcd1234", handoff: {
+    step_id: step.id, brief: step.brief, diff: "d", findings: [], model: "gpt-6.1-sol", risk: ["sensitive_files"], review: null } });
+  let reviews = 0;
+  const deps = withReviews(s, () => { reviews++; return bad(true); });
+  const exec = fakeExec([
+    { when: c => c.args[0] === "status", reply: ok("") },
+    { when: () => true, reply: c => s.deps.exec(c.cmd, c.args, c.opts) },
+  ]);
+  const out = await runPlan({ ...deps, exec }, s.task.id);
+  assert.ok(reviews > 0);
+  assert.deepEqual(out.awaiting_review, [1]);
+  assert.ok(!exec.calls.some(c => c.args[0] === "merge"));
+});
+
+test("reviewer timeout fails the step", async () => {
+  const s = setup();
+  const step = risky(s);
+  const out = await runPlan(withReviews(s, () => ({ ...bad(), error: "timeout" })), s.task.id);
+  assert.deepEqual(out.failed, [1]);
+  assert.ok(s.repo.listAttempts(step.id).some(a => a.kind === "review" && a.failure_reason === "timeout"));
+});
+
+test("same-provider reviewer fallback is flagged on the review attempt", async () => {
+  const s = setup();
+  const step = risky(s);
+  s.repo.upsertModel({ name: "sonnet-5-5", adapter: "claude-code", tier: "mid", preference: 0 });
+  s.repo.setAvailability("sonnet-5-5", { available: false, quota_state: "exhausted" });
+  const deps = withReviews(s, () => ({ ...good, text: '{"approved":true,"findings":[]}' }));
+  assert.deepEqual((await runPlan(deps, s.task.id)).done, [1]);
+  const review = s.repo.listAttempts(step.id).find(a => a.kind === "review")!;
+  assert.equal(review.model, "gpt-6.1-terra");
+  assert.equal(review.ci_result, "review_passed:same_provider_review");
 });
 
 test("malformed review never approves a risky change or unblocks a dependent", async () => {

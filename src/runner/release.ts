@@ -37,7 +37,7 @@ export async function syncReleased(d: ReleaseDeps): Promise<{ merged: number[]; 
   }
   for (const id of tasks) {
     const steps = d.repo.listSteps(id);
-    const status = steps.some((s) => s.status === "failed") ? "failed" : steps.some((s) => s.status === "pr_open") ? "awaiting_release" : "done";
+    const status = steps.some((s) => s.status === "failed") ? "failed" : steps.some((s) => s.status === "awaiting_review") ? "awaiting_review" : steps.some((s) => s.status === "pr_open") ? "awaiting_release" : "done";
     d.repo.updateTask(id, { status });
   }
   return out;

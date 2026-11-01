@@ -72,12 +72,13 @@ Pedido: ${request}`,
     let raw: unknown;
     try { raw = JSON.parse(r.text.slice(r.text.indexOf("{"), r.text.lastIndexOf("}") + 1)); } catch { continue; }
     const parsed = schema.safeParse(raw);
-    if (!parsed.success || parsed.data.steps.some((s, i) => (!s.role && !s.phase && !s.tier) || s.depends_on.some((d) => d > i) || !s.acceptance.length || (s.risk === "high" && !s.risk_reasons.length))) continue;
+    if (!parsed.success || parsed.data.steps.some((s, i) => (!s.role && !s.phase && !s.tier) || s.depends_on.some((d) => d > i))) continue;
     return fileDependencies(parsed.data.steps.map((s) => {
       const phase = s.role ? phaseForRole[s.role] : s.phase ?? (s.tier === "cheap" ? "simple_edit" : s.tier === "mid" ? "implementing" : "planning");
       const role = s.role ?? phase;
       const item = { ...classified(cfg, s.brief, phase, s.depends_on, s.files, `Decomposição cheap/low; papel ${role}; menor preço de entrada+saída na categoria configurada`),
-        acceptance: s.acceptance, risk: s.risk, risk_reasons: s.risk_reasons };
+        acceptance: s.acceptance.length ? s.acceptance : [s.brief.split("\n")[0]!.slice(0, 200)],
+        risk: s.risk, risk_reasons: s.risk === "high" && !s.risk_reasons.length ? ["planner"] : s.risk_reasons };
       if (role === "triage") { item.tier = "cheap"; item.effort = "low"; }
       return { ...item, role };
     }));

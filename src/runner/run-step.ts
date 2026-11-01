@@ -63,6 +63,8 @@ export async function runStep(d: StepDeps, stepId: string, execution?: StepExecu
   let n = repo.listAttempts(stepId).length;
   if (step.status === "done" || step.status === "pr_open") return { status: step.status, attempts: n };
 
+  // Retomada de awaiting_review: só falta a revisão sobre o commit gravado; não repete o agente.
+  let resume = !!execution && step.status === "awaiting_review" && !!step.branch && !!step.handoff?.risk.length && !step.handoff.review?.approved;
   let open: { id: string; usage: Parameters<Repo["finishAttempt"]>[1] } | null = null;
   const finish = (r: Parameters<Repo["finishAttempt"]>[1]) => {
     if (open) repo.finishAttempt(open.id, { ...open.usage, ...r });
@@ -123,6 +125,8 @@ export async function runStep(d: StepDeps, stepId: string, execution?: StepExecu
         repo.updateStep(stepId, { status: "failed" });
         return { status: "failed", attempts: n, reason: lastFailure ?? "no attempts left" };
       }
+      const resumed = resume;
+      resume = false;
       const rungStep: Step | null = retry ?? (failures >= cfg.escalation.max_attempts ? null : stepFor(cfg, step.tier as Tier, rung));
       if (!rungStep) {
         repo.updateStep(stepId, { status: "failed" });
@@ -147,7 +151,7 @@ export async function runStep(d: StepDeps, stepId: string, execution?: StepExecu
         : choice.tier === "mid" ? "implementing" : choice.tier === "cheap" ? "simple_edit" : "integration";
       const states: Record<string, { available: boolean }> = { ...availability(repo) };
       if (!repair) for (const t of tried) states[t] = { available: false };
-      const name: string | null = retry ? (states[retry.name]?.available === false ? null : retry.name)
+      const name: string | null = resumed ? step.handoff!.model : retry ? (states[retry.name]?.available === false ? null : retry.name)
         : step.phase || step.role
           ? selectForRole(cfg, repair ? phase ?? "implementing" : step.role ?? phase ?? "implementing", states, { tier: choice.tier, effort: choice.effort })?.model ?? null
           : selectModel(cfg, choice.tier, states, phase);
@@ -170,14 +174,16 @@ export async function runStep(d: StepDeps, stepId: string, execution?: StepExecu
       const effort: Effort = current?.effort ?? (!repair && rung === 1 && step.effort ? step.effort : choice.effort);
       retried ||= !!retry;
       retry = null;
-      const attempt = repo.insertAttempt({
+      const attempt = resumed ? null : repo.insertAttempt({
         step_id: stepId, n: n = repo.listAttempts(stepId).length + 1, adapter: model.adapter, model: name, tier: choice.tier, effort, runner: d.runner,
         kind: repair ? "repair" : "task", reason: repair?.choice?.reason ?? lastFailure ?? "initial task",
       });
-      open = { id: attempt.id, usage: {} };
+      if (attempt) open = { id: attempt.id, usage: {} };
 
       const title = step.brief.split("\n")[0]!.slice(0, 72);
-      const run: RunResult = await d.adapters[model.adapter].run({
+      const run: RunResult = resumed
+        ? { ok: true, text: step.handoff!.findings[0] ?? "", usage: { input_tokens: 0, output_tokens: 0, cache_read_tokens: 0, cache_write_tokens: 0 }, cost_usd: 0, quota_exhausted: false }
+        : await d.adapters[model.adapter].run({
         model: model.id, effort, prompt: repairPrompt ?? (current?.prompt ?? promptFor(step.brief, lastFailure, step.acceptance)) +
           (execution?.context.dependencies.length ? `\n\nContexto das dependências (JSON):\n${JSON.stringify(execution.context)}` : ""), cwd: worktree,
         timeoutMs: AGENT_TIMEOUT_MS,
@@ -187,7 +193,7 @@ export async function runStep(d: StepDeps, stepId: string, execution?: StepExecu
         cache_read_tokens: run.usage.cache_read_tokens, cache_write_tokens: run.usage.cache_write_tokens,
         est_cost_usd: run.cost_usd ?? estimateCost(model.price, run.usage),
       };
-      open.usage = usage;
+      if (open) open.usage = usage;
       if (!run.quota_exhausted) {
         pendingRepair = null;
         if (repair) repairs++;
@@ -217,7 +223,10 @@ export async function runStep(d: StepDeps, stepId: string, execution?: StepExecu
 
       // local e staged commitam antes do gate; o modo pr deixa o commit para o publishBranch.
       // Dentro de um plano o modo pr também commita aqui: o handoff e a revisão cruzada precisam do diff antes do PR.
-      let unchanged = (mode !== "pr" || !!execution) && !(await commitAll(d.exec, { worktree, title }));
+      let unchanged = !resumed && (mode !== "pr" || !!execution) && !(await commitAll(d.exec, { worktree, title }));
+      // Sem mudança nova, o commit já gravado de uma tentativa anterior ainda precisa da revisão cruzada obrigatória.
+      const prior = repo.getStep(stepId)!.handoff;
+      if (unchanged && execution && prior?.risk.length && !prior.review?.approved) unchanged = false;
       const reviewed: Awaited<ReturnType<StepExecution["beforeVerify"]>> = unchanged ? undefined : await execution?.beforeVerify({ worktree, model: name, run });
       n = repo.listAttempts(stepId).length;
       if (reviewed?.result === "waiting_quota" || reviewed?.result === "awaiting_review") {
