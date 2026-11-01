@@ -57,6 +57,23 @@ test("ambiguous delegation uses cheap low even when triage is configured strong"
   assert.equal(s.calls[0]?.readOnly, true);
 });
 
+test("model deconstruction keeps each role and maps it to the role's phase, tier and effort", async () => {
+  const s = setup(JSON.stringify({ steps: [
+    { role: "triage", brief: "Classifique o pedido", depends_on: [], files: [] },
+    { role: "investigation", brief: "Ache a causa raiz do deadlock", depends_on: [], files: [] },
+    { role: "review", brief: "Revise o diff do cache", depends_on: [2], files: [] },
+  ] }));
+  const out = await decompose(cfg, s.adapters, "Cuide de A e também B", { cwd: "/w", repo: s.repo });
+  assert.ok(out);
+  assert.deepEqual(out.map((x) => [x.role, x.phase, x.tier, x.effort]), [
+    ["triage", "simple_edit", "cheap", "low"],
+    ["investigation", "integration", cfg.phases.integration.tier, cfg.phases.integration.effort],
+    ["review", "implementing", cfg.phases.implementing.tier, cfg.phases.implementing.effort],
+  ]);
+  assert.deepEqual(out.map((x) => x.depends_on), [[], [], [2]]);
+  assert.match(s.calls[0]!.prompt, /"role":"triage\|/);
+});
+
 test("invalid dependency and malformed fallback never persist or escalate", async () => {
   const s = setup(JSON.stringify({ steps: [{ phase: "simple_edit", brief: "x", depends_on: [1], files: [] }] }));
   await assert.rejects(() => decompose(cfg, s.adapters, "Cuide de A e também B", { cwd: "/w", repo: s.repo }), /invalid plan/);
