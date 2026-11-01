@@ -1,6 +1,6 @@
 import { join } from "node:path";
 import type { Config, Effort, Phase, Step, Tier } from "../config.ts";
-import type { Adapter, AdapterName, RunResult } from "../adapters/types.ts";
+import { ZERO_USAGE, type Adapter, type AdapterName, type RunResult } from "../adapters/types.ts";
 import { availability } from "../catalog/check.ts";
 import type { Exec } from "../exec.ts";
 import { backupBase, backupBranch, commitAll, deleteRemoteBranch, publishBranch, pushBranch, startBranch } from "../git/branch.ts";
@@ -113,6 +113,11 @@ export async function runStep(d: StepDeps, stepId: string, execution?: StepExecu
     // Sem mudanças não escala: o gate decide se a base já atende; se não, uma única nova tentativa com o mesmo modelo.
     let retry: Retry | null = null;
     let retried = false;
+    // Revisão pendente por falta de cota: a retomada só refaz a revisão (o trabalho do autor já está commitado no branch).
+    const prior = repo.listAttempts(stepId);
+    let resuming = execution && step.status === "waiting_quota" && step.handoff && step.branch && prior.at(-1)?.ci_result === "review_waiting_quota"
+      ? { attemptId: prior.filter(a => a.kind !== "review").at(-1)?.id, handoff: step.handoff } : null;
+    if (resuming && !resuming.attemptId) resuming = null;
 
     for (;;) {
       if (retried && !retry) {
@@ -143,7 +148,9 @@ export async function runStep(d: StepDeps, stepId: string, execution?: StepExecu
         : choice.tier === "mid" ? "implementing" : choice.tier === "cheap" ? "simple_edit" : "integration";
       const states: Record<string, { available: boolean }> = { ...availability(repo) };
       if (!repair) for (const t of tried) states[t] = { available: false };
-      const name: string | null = retry ? (states[retry.name]?.available === false ? null : retry.name)
+      const resumed = resuming;
+      resuming = null;
+      const name: string | null = resumed ? resumed.handoff.model : retry ? (states[retry.name]?.available === false ? null : retry.name)
         : step.phase || step.role
           ? selectForRole(cfg, repair ? phase ?? "implementing" : step.role ?? phase ?? "implementing", states, { tier: choice.tier, effort: choice.effort })?.model ?? null
           : selectModel(cfg, choice.tier, states, phase);
@@ -166,24 +173,30 @@ export async function runStep(d: StepDeps, stepId: string, execution?: StepExecu
       const effort: Effort = current?.effort ?? (!repair && rung === 1 && step.effort ? step.effort : choice.effort);
       retried ||= !!retry;
       retry = null;
-      const attempt = repo.insertAttempt({
-        step_id: stepId, n: n = repo.listAttempts(stepId).length + 1, adapter: model.adapter, model: name, tier: choice.tier, effort, runner: d.runner,
-        kind: repair ? "repair" : "task", reason: repair?.choice?.reason ?? lastFailure ?? "initial task",
-      });
-      open = { id: attempt.id, usage: {} };
-
       const title = step.brief.split("\n")[0]!.slice(0, 72);
-      const run: RunResult = await d.adapters[model.adapter].run({
-        model: model.id, effort, prompt: repairPrompt ?? (current?.prompt ?? promptFor(step.brief, lastFailure)) +
-          (execution?.context.dependencies.length ? `\n\nContexto das dependências (JSON):\n${JSON.stringify(execution.context)}` : ""), cwd: worktree,
-        timeoutMs: AGENT_TIMEOUT_MS,
-      });
+      let run: RunResult;
+      if (resumed) {
+        // Reabre a tentativa do autor (uso já gravado); o texto do autor vem do handoff.
+        open = { id: resumed.attemptId!, usage: {} };
+        run = { ok: true, text: resumed.handoff.findings[0] ?? "", usage: ZERO_USAGE, cost_usd: null, quota_exhausted: false };
+      } else {
+        const attempt = repo.insertAttempt({
+          step_id: stepId, n: n = repo.listAttempts(stepId).length + 1, adapter: model.adapter, model: name, tier: choice.tier, effort, runner: d.runner,
+          kind: repair ? "repair" : "task", reason: repair?.choice?.reason ?? lastFailure ?? "initial task",
+        });
+        open = { id: attempt.id, usage: {} };
+        run = await d.adapters[model.adapter].run({
+          model: model.id, effort, prompt: repairPrompt ?? (current?.prompt ?? promptFor(step.brief, lastFailure)) +
+            (execution?.context.dependencies.length ? `\n\nContexto das dependências (JSON):\n${JSON.stringify(execution.context)}` : ""), cwd: worktree,
+          timeoutMs: AGENT_TIMEOUT_MS,
+        });
+      }
       const usage = {
         input_tokens: run.usage.input_tokens, output_tokens: run.usage.output_tokens,
         cache_read_tokens: run.usage.cache_read_tokens, cache_write_tokens: run.usage.cache_write_tokens,
         est_cost_usd: run.cost_usd ?? estimateCost(model.price, run.usage),
       };
-      open.usage = usage;
+      if (!resumed) open.usage = usage;
       if (!run.quota_exhausted) {
         pendingRepair = null;
         if (repair) repairs++;
@@ -213,7 +226,7 @@ export async function runStep(d: StepDeps, stepId: string, execution?: StepExecu
 
       // local e staged commitam antes do gate; o modo pr deixa o commit para o publishBranch.
       // Dentro de um plano o modo pr também commita aqui: o handoff e a revisão cruzada precisam do diff antes do PR.
-      let unchanged = (mode !== "pr" || !!execution) && !(await commitAll(d.exec, { worktree, title }));
+      let unchanged = !resumed && (mode !== "pr" || !!execution) && !(await commitAll(d.exec, { worktree, title }));
       const reviewed: Awaited<ReturnType<StepExecution["beforeVerify"]>> = unchanged ? undefined : await execution?.beforeVerify({ worktree, model: name, run });
       n = repo.listAttempts(stepId).length;
       if (reviewed?.result === "waiting_quota") {

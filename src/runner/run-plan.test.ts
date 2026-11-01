@@ -144,24 +144,74 @@ test("failed targeted repair returns to the task ladder with review attempts out
   assert.match(s.runs[4]!.prompt, /Corrija autorização/);
 });
 
+// Todo revisor possível para um autor codex (sol): claude de tier >= mid, mais astra (mesmo fornecedor, strong).
+const reviewers = ["sonnet-5-5", "opus-5-5", "gpt-6-astra"];
+const approve = () => ({ ...good, text: JSON.stringify({ approved: true, findings: [] }) });
+
 for (const unavailable of ["disabled", "exhausted", "quota"] as const) {
-  test(`required reviewer ${unavailable} parks the step and blocks its dependents`, async () => {
+  test(`no reviewer ${unavailable} parks the step and blocks its dependents`, async () => {
     const s = setup();
     const step = risky(s);
     s.mk(2, [step.id]);
     if (unavailable === "exhausted") {
-      s.repo.upsertModel({ name: "sonnet-5-5", adapter: "claude-code", tier: "mid", preference: 0 });
-      s.repo.setAvailability("sonnet-5-5", { available: false, quota_state: "exhausted" });
+      for (const name of reviewers) {
+        s.repo.upsertModel({ name, adapter: cfg.models[name]!.adapter, tier: cfg.models[name]!.tier, preference: 0 });
+        s.repo.setAvailability(name, { available: false, quota_state: "exhausted" });
+      }
     }
     const deps = withReviews(s, () => bad(true));
-    if (unavailable === "disabled") deps.cfg = { ...cfg, models: { ...cfg.models, "sonnet-5-5": { ...cfg.models["sonnet-5-5"]!, enabled: false } } };
+    if (unavailable === "disabled") deps.cfg = { ...cfg, models: { ...cfg.models, ...Object.fromEntries(reviewers.map(n => [n, { ...cfg.models[n]!, enabled: false }])) } };
     assert.deepEqual(await runPlan(deps, s.task.id), { done: [], failed: [], blocked: [2], waiting_quota: [1] });
     assert.ok(!s.deps.exec.calls.some(c => c.cmd === "gh"));
     assert.ok(!s.started.includes("passo 2"));
-    assert.equal(s.runs.filter(r => r.readOnly).length, unavailable === "quota" ? 1 : 0);
+    assert.equal(s.runs.filter(r => r.readOnly).length, unavailable === "quota" ? reviewers.length : 0);
     assert.ok(s.repo.listAttempts(step.id).every(a => a.finished_at));
   });
 }
+
+test("reviewer quota exhausted falls to another cross-provider model of a higher tier, recording who and why", async () => {
+  const s = setup();
+  const step = risky(s);
+  const deps = withReviews(s, i => i.model === cfg.models["sonnet-5-5"]!.id ? bad(true) : approve());
+  assert.deepEqual((await runPlan(deps, s.task.id)).done, [1]);
+  const reviews = s.repo.listAttempts(step.id).filter(a => a.kind === "review");
+  assert.deepEqual(reviews.map(a => [a.model, a.tier, a.ci_result]), [["sonnet-5-5", "mid", "review_waiting_quota"], ["opus-5-5", "strong", "review_passed"]]);
+  assert.match(reviews[1]!.reason!, /opus-5-5 \(autor gpt-6\.1-sol\): cross_provider/);
+});
+
+test("without any cross-provider reviewer, a different same-provider model of tier >= the author's reviews", async () => {
+  const s = setup();
+  const step = risky(s);
+  const deps = withReviews(s, approve);
+  const off = (n: string) => [n, { ...cfg.models[n]!, enabled: false }] as const;
+  const config = {
+    ...cfg, models: { ...cfg.models, ...Object.fromEntries(["gpt-6.1-sol", "gpt-6-astra"].map(off)) },
+    phases: { ...cfg.phases, implementing: { ...cfg.phases.implementing, prefer: ["sonnet-5-5"] } },
+  };
+  assert.deepEqual((await runPlan({ ...deps, cfg: config }, s.task.id)).done, [1]);
+  const [task, review] = s.repo.listAttempts(step.id);
+  assert.equal(task!.model, "sonnet-5-5");
+  assert.deepEqual([review!.kind, review!.model, review!.tier], ["review", "opus-5-5", "strong"]);
+  assert.match(review!.reason!, /same_provider_fallback/);
+});
+
+test("run_plan resumes review_waiting_quota steps without rerunning the author", async () => {
+  const s = setup();
+  const step = risky(s);
+  let quota = true;
+  const deps = withReviews(s, () => quota ? bad(true) : approve());
+  assert.deepEqual((await runPlan(deps, s.task.id)).waiting_quota, [1]);
+  const authorRuns = () => s.runs.filter(r => !r.readOnly).length;
+  assert.equal(authorRuns(), 1);
+  quota = false;
+  s.repo.setAvailability("sonnet-5-5", { available: true, quota_state: "ok" });
+  s.repo.setAvailability("opus-5-5", { available: true, quota_state: "ok" });
+  s.repo.setAvailability("gpt-6-astra", { available: true, quota_state: "ok" });
+  assert.deepEqual(await runPlan(deps, s.task.id), { done: [1], failed: [], blocked: [], waiting_quota: [] });
+  assert.equal(authorRuns(), 1);
+  assert.equal(s.repo.getStep(step.id)!.handoff!.review!.approved, true);
+  assert.ok(s.repo.listAttempts(step.id).every(a => a.finished_at));
+});
 
 test("risk in the actual diff requires review even if the brief and declared files are trivial", async () => {
   const s = setup();
