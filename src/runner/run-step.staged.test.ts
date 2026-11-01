@@ -13,13 +13,13 @@ import { release } from "../../ci/release.ts";
 import { syncReleased } from "./release.ts";
 import { runStep } from "./run-step.ts";
 
-// Git real com remoto bare; só o `gh` é falso (o merge dele é um push para main). Prova push-só-depois-do-gate, PR sem CI/merge
+// Git real com remoto bare; só o `gh` é falso (o merge dele é um push para main). Prova PR-só-depois-do-gate (o branch sobe antes como backup), PR sem CI/merge
 // até o sinal, e o release (ci/release.ts) mergeando e apagando o branch.
 const git = (cwd: string, ...a: string[]) => execFileSync("git", a, { cwd, encoding: "utf8" }).trim();
 const cfg0 = loadConfig(new URL("../../config/router.yaml", import.meta.url).pathname);
 const usage = { input_tokens: 1, output_tokens: 1, cache_read_tokens: 0, cache_write_tokens: 0 };
 
-test("staged end to end: failing gate pushes nothing, passing gate opens the PR, and only the release signal merges and deletes the branch", async () => {
+test("staged end to end: failing gate opens no PR, passing gate opens the PR, and only the release signal merges and deletes the branch", async () => {
   const root = mkdtempSync(join(tmpdir(), "router-staged-"));
   const remote = join(root, "remote.git");
   const dir = join(root, "work");
@@ -70,7 +70,7 @@ test("staged end to end: failing gate pushes nothing, passing gate opens the PR,
   // Estágio local: PR aberto, nada de CI nem merge.
   assert.deepEqual(out, { status: "pr_open", attempts: 2 });
   assert.deepEqual(repo.listAttempts(step.id).map((a) => a.ci_result), ["local_failed", "pr_open"]);
-  assert.deepEqual(pushes, ["2"]); // um só push, depois da 2ª rodada do agente
+  assert.deepEqual(pushes, ["0", "1", "2", "2"]); // backup na criação e após cada rodada; o último é o push do PR
   assert.ok(ghCalls.includes("pr create") && !ghCalls.includes("pr merge") && !ghCalls.includes("pr checks"));
   const branch = repo.getStep(step.id)!.branch!;
   assert.match(git(dir, "ls-remote", "--heads", "origin", branch), /refs\/heads\/router/);

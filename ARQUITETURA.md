@@ -118,6 +118,7 @@ verify:
   mode: ci            # juiz por LLM só como opção, desligado
   auto_merge: true    # exige todos os checks verdes e rebase na main
   delete_branch: true
+  push: always        # always|never: sobe todo branch de passo para origin (backup); padrão always
 
 dispatch:
   local: self-hosted   # PC ligado

@@ -33,6 +33,18 @@ export async function commitAll(exec: Exec, o: { worktree: string; title: string
   return true;
 }
 
+// Backup do branch em origin. Falha (sem rede/credencial) vira aviso, nunca derruba o passo: o próximo push tenta de novo.
+// --force-with-lease: o rebase do gate local reescreve um branch já publicado.
+export async function backupBranch(exec: Exec, o: { worktree: string; branch: string }): Promise<void> {
+  const r = await exec("git", ["push", "-u", "--force-with-lease", "origin", o.branch], { cwd: o.worktree });
+  if (r.code !== 0) console.error(`push de ${o.branch} para origin falhou (tenta de novo no próximo push): ${r.stderr.trim() || r.stdout.trim() || `exit ${r.code}`}`);
+}
+
+export async function deleteRemoteBranch(exec: Exec, o: { repoDir: string; branch: string }): Promise<void> {
+  const r = await exec("git", ["push", "origin", "--delete", o.branch], { cwd: o.repoDir });
+  if (r.code !== 0) console.error(`apagar ${o.branch} em origin falhou: ${r.stderr.trim() || r.stdout.trim() || `exit ${r.code}`}`);
+}
+
 export type Published = { changed: false } | { changed: true; pr_number: number };
 
 type PushOptions = { worktree: string; branch: string; base: string; title: string; body: string; pr_number?: number };

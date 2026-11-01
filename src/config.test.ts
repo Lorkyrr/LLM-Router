@@ -109,3 +109,10 @@ test("verify.cluster defaults to auto and rejects unknown values", () => {
   assert.equal(parseConfig({ ...base(), verify: { ...verify, cluster: "off" } }).verify.cluster, "off");
   assert.throws(() => parseConfig({ ...base(), verify: { ...verify, cluster: "yes" } }));
 });
+
+test("verify.push defaults to always, accepts never and rejects other values", () => {
+  const verify = { auto_merge: true, delete_branch: true };
+  assert.equal(parseConfig({ ...base(), verify }).verify.push, "always");
+  assert.equal(parseConfig({ ...base(), verify: { ...verify, push: "never" } }).verify.push, "never");
+  assert.throws(() => parseConfig({ ...base(), verify: { ...verify, push: "sometimes" } }));
+});

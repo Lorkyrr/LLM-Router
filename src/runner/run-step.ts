@@ -3,7 +3,7 @@ import type { Config, Tier } from "../config.ts";
 import type { Adapter, AdapterName } from "../adapters/types.ts";
 import { availability } from "../catalog/check.ts";
 import type { Exec } from "../exec.ts";
-import { commitAll, publishBranch, pushBranch, startBranch } from "../git/branch.ts";
+import { backupBranch, commitAll, deleteRemoteBranch, publishBranch, pushBranch, startBranch } from "../git/branch.ts";
 import { estimateCost } from "../policy/cost.ts";
 import { stepFor } from "../policy/escalate.ts";
 import type { Lease } from "./lease.ts";
@@ -52,6 +52,10 @@ export async function runStep(d: StepDeps, stepId: string): Promise<StepOutcome>
     open = null;
   };
 
+  const backup = async (b: string, w: string) => {
+    if (cfg.verify.push === "always") await backupBranch(d.exec, { worktree: w, branch: b });
+  };
+
   try {
     repo.updateStep(stepId, { status: "running" });
     // Branch gravado = worktree já existe (mesma derivação de startBranch); só grava depois de criar com sucesso.
@@ -81,6 +85,7 @@ export async function runStep(d: StepDeps, stepId: string): Promise<StepOutcome>
         }
       }
       repo.updateStep(stepId, { branch });
+      await backup(branch, worktree);
     }
 
     // `rung` = degrau da escada; `failures` = tentativas gastas (teto max_attempts). Falha não-quota tenta antes os
@@ -119,6 +124,7 @@ export async function runStep(d: StepDeps, stepId: string): Promise<StepOutcome>
       });
       open = { id: attempt.id, usage: {} };
 
+      const title = step.brief.split("\n")[0]!.slice(0, 72);
       const run = await d.adapters[model.adapter].run({
         model: model.id, effort: rungStep.effort, prompt: promptFor(step.brief, lastFailure), cwd: worktree,
         timeoutMs: AGENT_TIMEOUT_MS,
@@ -131,6 +137,10 @@ export async function runStep(d: StepDeps, stepId: string): Promise<StepOutcome>
       open.usage = usage;
 
       if (!run.ok) {
+        // Trabalho parcial de uma tentativa que falhou também vai para origin (o modo pr deixa o commit ao publishBranch).
+        if (mode !== "pr" && cfg.verify.push === "always" && (await commitAll(d.exec, { worktree, title }).catch(() => false))) {
+          await backup(branch, worktree);
+        }
         if (run.quota_exhausted) {
           // Sem cota não é falha do passo: marca o modelo e tenta o próximo da mesma categoria sem subir a escada.
           // upsert antes: sem a linha em `models` o UPDATE não pega e o laço escolheria o mesmo modelo para sempre.
@@ -146,7 +156,6 @@ export async function runStep(d: StepDeps, stepId: string): Promise<StepOutcome>
         continue;
       }
 
-      const title = step.brief.split("\n")[0]!.slice(0, 72);
       // local e staged commitam antes do gate; o modo pr deixa o commit para o publishBranch.
       if (mode !== "pr" && !(await commitAll(d.exec, { worktree, title }))) {
         lastFailure = "agent made no changes";
@@ -155,6 +164,7 @@ export async function runStep(d: StepDeps, stepId: string): Promise<StepOutcome>
         tried.add(name);
         continue;
       }
+      if (mode !== "pr") await backup(branch, worktree);
       const localOpts = { worktree, cmds: cfg.verify.local?.cmds ?? [], timeoutMs: (cfg.verify.local?.timeout_s ?? 0) * 1000 };
       let verdict: Verdict;
       let stage = "";
@@ -211,6 +221,8 @@ export async function runStep(d: StepDeps, stepId: string): Promise<StepOutcome>
         // Sem isto cada passo deixa um worktree e um branch local para trás; falha de limpeza não desfaz o merge.
         await d.exec("git", ["worktree", "remove", "--force", worktree], { cwd: d.repoDir });
         await d.exec("git", ["branch", "-D", branch], { cwd: d.repoDir });
+        // Só o modo local mergeia aqui (pr/staged apagam o remoto no CI/release); sem merge o remoto fica como backup.
+        if (mode === "local" && cfg.verify.delete_branch && cfg.verify.push === "always") await deleteRemoteBranch(d.exec, { repoDir: d.repoDir, branch });
         repo.updateStep(stepId, { status: "done" });
         return { status: "done", attempts: n };
       }

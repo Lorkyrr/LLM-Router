@@ -60,6 +60,8 @@ const schema = z
       cluster: z.enum(["auto", "kind", "off"]).default("auto"),
       auto_merge: z.boolean(),
       delete_branch: z.boolean(),
+      // always: todo branch de passo é publicado em origin ao ser criado e a cada tentativa (backup fora do PC).
+      push: z.enum(["always", "never"]).default("always"),
     }),
     dispatch: z.object({ cloud_tiers: z.array(tier), heartbeat_timeout_s: z.number().int().positive() }),
   })

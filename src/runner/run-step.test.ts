@@ -184,7 +184,8 @@ test("an adapter that throws fails the step and closes the attempt", async () =>
 test("exceptions from publishing or from the lease also fail the step instead of leaving it running", async () => {
   const p = setup([good], ["green"]);
   const exec = breakOn(p.deps.exec, (c, a) => c === "git" && a[0] === "push", "push denied");
-  assert.deepEqual(await runStep({ ...p.deps, exec }, p.step.id), { status: "failed", attempts: 1, reason: "push denied" });
+  const noBackup = { ...p.deps.cfg, verify: { ...p.deps.cfg.verify, push: "never" as const } }; // o backup só avisa; aqui o alvo é o push do PR
+  assert.deepEqual(await runStep({ ...p.deps, cfg: noBackup, exec }, p.step.id), { status: "failed", attempts: 1, reason: "push denied" });
   assert.ok(p.repo.listAttempts(p.step.id)[0]!.finished_at);
 
   const l = setup([good], ["green"]);
@@ -252,16 +253,16 @@ function setupLocal(agent: RunResult[], tests: number[], autoMerge = true) {
     { when: (c) => a(c, "commit"), reply: ok() },
     { when: (c) => c.cmd === "npm", reply: () => ({ code: tests[t++] ?? 0, stdout: "not ok 1", stderr: "" }) },
     { when: (c) => a(c, "rev-parse"), reply: ok("main\n") },
-    { when: (c) => a(c, "rebase") || a(c, "merge"), reply: ok() },
+    { when: (c) => a(c, "rebase") || a(c, "merge") || a(c, "push"), reply: ok() },
   ]);
   const cfgLocal = { ...cfg, verify: { ...cfg.verify, mode: "local" as const, local: { cmds: [["npm", "test"]], timeout_s: 60 }, auto_merge: autoMerge } };
   return { ...s, exec, deps: { ...s.deps, cfg: cfgLocal, exec } };
 }
 
-test("local mode: no fetch, push or gh; tests green merges locally and cleans up", async () => {
+test("local mode: no fetch or gh; tests green merges locally and cleans up", async () => {
   const s = setupLocal([good], [0]);
   assert.deepEqual(await runStep(s.deps, s.step.id), { status: "done", attempts: 1 });
-  assert.ok(!s.exec.calls.some((c) => c.cmd === "gh" || c.args[0] === "fetch" || c.args[0] === "push"));
+  assert.ok(!s.exec.calls.some((c) => c.cmd === "gh" || c.args[0] === "fetch"));
   assert.equal(s.exec.calls.find((c) => c.args[0] === "worktree")!.args.at(-1), "main");
   assert.equal(s.repo.listAttempts(s.step.id)[0]!.ci_result, "merged");
   assert.ok(s.exec.calls.some((c) => c.args[0] === "worktree" && c.args[1] === "remove"));
@@ -282,7 +283,7 @@ test("local mode with auto_merge off: step is done, branch and worktree are kept
   assert.ok(!s.exec.calls.some((c) => c.args[0] === "merge" || (c.args[0] === "worktree" && c.args[1] === "remove")));
 });
 
-// Staged: gate local (fetch, rebase, checks) antes de qualquer push; depois só o PR abre e CI/merge esperam o `release`.
+// Staged: gate local (fetch, rebase, checks) antes do push do PR (o backup do branch sobe antes); depois só o PR abre e CI/merge esperam o `release`.
 function setupStaged(agent: RunResult[], local: number[], rebase: ("ok" | "conflict")[] = []) {
   const s = setup(agent, []);
   let l = 0;
@@ -306,7 +307,7 @@ const idx = (e: { calls: { cmd: string; args: string[] }[] }, f: (c: { cmd: stri
 test("staged: local gate passes, then only the PR opens; no CI wait, no merge, no runner", async () => {
   const s = setupStaged([good], [0]);
   assert.deepEqual(await runStep(s.deps, s.step.id), { status: "pr_open", attempts: 1 });
-  const order = ["rebase", "npm", "push", "gh"].map((k) => idx(s.exec, (c) => (k === "npm" || k === "gh" ? c.cmd === k : c.args[0] === k)));
+  const order = ["rebase", "npm", "push", "gh"].map((k) => (k === "push" ? s.exec.calls.findLastIndex((c) => c.args[0] === k) : idx(s.exec, (c) => (k === "npm" || k === "gh" ? c.cmd === k : c.args[0] === k))));
   assert.deepEqual([...order].sort((x, y) => x - y), order);
   assert.deepEqual(s.exec.calls.find((c) => c.args[0] === "rebase")!.args, ["rebase", "origin/main"]);
   assert.ok(!s.exec.calls.some((c) => c.cmd === "gh" && (c.args[1] === "checks" || c.args[1] === "merge")));
@@ -322,7 +323,8 @@ test("staged: a red local gate retries without touching GitHub", async () => {
   assert.deepEqual(await runStep(s.deps, s.step.id), { status: "pr_open", attempts: 2 });
   assert.equal(s.repo.listAttempts(s.step.id)[0]!.ci_result, "local_failed");
   assert.match(s.runs[1]!.prompt, /\$ npm test \(exit 1\)[\s\S]*not ok 1/);
-  assert.equal(s.exec.calls.filter((c) => c.args[0] === "push").length, 1);
+  assert.equal(s.exec.calls.filter((c) => c.args[0] === "push").length, 4); // criação + backup de cada tentativa + push do PR
+  assert.deepEqual(s.exec.calls.filter((c) => c.cmd === "gh").map((c) => c.args[1]), ["create"]);
 });
 
 test("staged: a rebase conflict aborts the rebase and counts as local_conflict", async () => {
