@@ -5,7 +5,7 @@ import { fakeExec, ok, fail } from "../../test/fixtures/fake-exec.ts";
 import { makeGrokBuild } from "./grok-build.ts";
 
 const fixture = readFileSync(new URL("../../test/fixtures/grok-print.json", import.meta.url), "utf8");
-const input = { model: "grok-4.7-build-fast", effort: "high" as const, prompt: "faça y", cwd: "/work" };
+const input = { model: "grok-4.7", effort: "high" as const, prompt: "faça y", cwd: "/work" };
 
 test("builds the grok command with model, reasoning effort and json output", async () => {
   const exec = fakeExec([{ when: () => true, reply: ok(fixture) }]);
@@ -14,7 +14,7 @@ test("builds the grok command with model, reasoning effort and json output", asy
   assert.equal(call.cmd, "grok");
   assert.deepEqual(call.args.slice(0, 2), ["-p", "faça y"]);
   const expected: Array<[string, string]> = [
-    ["-m", "grok-4.7-build-fast"], ["--reasoning-effort", "high"], ["--output-format", "json"], ["--permission-mode", "acceptEdits"],
+    ["-m", "grok-4.7"], ["--reasoning-effort", "high"], ["--output-format", "json"], ["--permission-mode", "acceptEdits"],
   ];
   for (const [flag, value] of expected) assert.equal(call.args[call.args.indexOf(flag) + 1], value, flag);
   assert.equal(call.opts?.cwd, "/work");
@@ -32,6 +32,15 @@ test("a non-zero exit is not ok and a rate-limit message is flagged as quota", a
   const r = await makeGrokBuild(fakeExec([{ when: () => true, reply: fail("rate limit exceeded") }])).run(input);
   assert.equal(r.ok, false);
   assert.equal(r.quota_exhausted, true);
+});
+
+test("a Grok Build usage-limit message is quota exhaustion in run and ping", async () => {
+  const exec = fakeExec([{ when: () => true, reply: fail("You've reached your free Grok Build usage limit") }]);
+  const adapter = makeGrokBuild(exec);
+  const r = await adapter.run(input);
+  assert.equal(r.ok, false);
+  assert.equal(r.quota_exhausted, true);
+  assert.deepEqual(await adapter.ping("grok-4.7"), { available: false, quota_state: "exhausted" });
 });
 
 test("ping reports available on success", async () => {

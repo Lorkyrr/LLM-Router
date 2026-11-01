@@ -101,7 +101,7 @@ test("a merge conflict counts as an attempt", async () => {
 test("exhausted quota moves to the next model of the same tier without escalating", async () => {
   const s = setup([bad("usage limit reached", true), good], ["green"], "cheap");
   assert.deepEqual(await runStep(s.deps, s.step.id), { status: "done", attempts: 2 });
-  assert.equal(s.repo.listAttempts(s.step.id)[1]!.model, "grok-fast");
+  assert.equal(s.repo.listAttempts(s.step.id)[1]!.model, "gpt-6-luna");
   assert.equal(s.runs[1]!.effort, "low");
 });
 
@@ -131,7 +131,7 @@ test("only after every cheap model failed does the step escalate, within max_att
   const r = await runStep({ ...s.deps, cfg: wide }, s.step.id);
   assert.equal(r.status, "failed");
   assert.deepEqual(s.repo.listAttempts(s.step.id).map((a) => [a.model, a.tier]), [
-    ["haiku-5-5", "cheap"], ["grok-fast", "cheap"], ["gpt-6-luna", "cheap"], ["sonnet-5-5", "mid"],
+    ["haiku-5-5", "cheap"], ["gpt-6-luna", "cheap"], ["sonnet-5-5", "mid"], ["gpt-6.1-sol", "mid"],
   ]);
 });
 

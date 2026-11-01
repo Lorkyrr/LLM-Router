@@ -13,8 +13,6 @@ models:
     price: { input: 0.1, output: 0.5, cache_read: 0.01, cache_write: 0.125 }
     pricing: { source: "https://platform.claude.com/docs/en/models/haiku-5-5/overview", checked_at: "2026-10-30", basis: standard_short_context }
     guidance: "Triagem e extração simples em low; medium para tarefas com ferramentas. Preços-base até 100k tokens de prompt."
-  grok-fast:
-    { adapter: grok-build, id: grok-4.7-build-fast, tier: cheap, price: { input: 0.5, output: 2, cache_read: 0.05, cache_write: 0.5 } }
   sonnet-5-5:
     adapter: claude-code
     id: claude-sonnet-5-5
@@ -67,7 +65,7 @@ models:
 
 # Ordem = preferência. Cada modelo aparece em uma só categoria; o fallback nunca desce de categoria.
 tiers:
-  cheap: [haiku-5-5, grok-fast, gpt-6-luna]
+  cheap: [haiku-5-5, gpt-6-luna]
   mid: [sonnet-5-5, gpt-6.1-sol, gpt-6.1-terra]
   strong: [opus-5-5, grok-reasoning, gpt-6-astra]
 

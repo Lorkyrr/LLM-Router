@@ -16,7 +16,7 @@ test("disabled models are never selected, even without availability state", () =
 });
 
 test("skips an unavailable model and takes the next one of the same tier", () => {
-  assert.equal(selectModel(cfg, "cheap", { "haiku-5-5": { available: false } }), "grok-fast");
+  assert.equal(selectModel(cfg, "cheap", { "haiku-5-5": { available: false } }), "gpt-6-luna");
 });
 
 test("a model with no recorded state counts as available", () => {
