@@ -77,17 +77,65 @@ test("failed repair returns to the original tier ladder and brief", async () => 
   assert.match(s.runs[2]!.prompt, /ORIGINAL TASK/);
 });
 
-test("no changes bypasses repair and uses the ladder", async () => {
-  const s = setup([], { changed: [false, true] });
-  await runStep(s.deps, s.step.id);
-  assert.deepEqual(s.repo.listAttempts(s.step.id).map(a => [a.kind, a.tier]), [["task", "mid"], ["task", "mid"]]);
+test("no changes with a passing gate is already satisfied: done, no repair, no escalation", async () => {
+  const s = setup([], { changed: [false] });
+  assert.deepEqual(await runStep(s.deps, s.step.id), { status: "done", attempts: 1, note: "already satisfied" });
+  assert.deepEqual(s.repo.listAttempts(s.step.id).map(a => [a.kind, a.ci_result]), [["task", "already satisfied"]]);
   assert.equal(s.exec.calls.filter(c => c.args[0] === "diff").length, 0);
+  assert.equal(s.exec.calls.filter(c => c.cmd === "npm").length, 1);
 });
 
-test("a repair making no changes returns to the ladder even with repairs left", async () => {
-  const s = setup(["SyntaxError: unexpected token"], { max: 2, changed: [true, false, true] });
-  await runStep(s.deps, s.step.id);
-  assert.deepEqual(s.repo.listAttempts(s.step.id).map(a => a.kind), ["task", "repair", "task"]);
+test("no changes with a failing gate retries once with the same model, effort and what is missing, then fails", async () => {
+  const s = setup(["missing export foo", "missing export foo"], { changed: [false, false] });
+  const out = await runStep(s.deps, s.step.id);
+  assert.equal(out.status, "failed");
+  assert.match((out as { reason: string }).reason, /no changes[\s\S]*missing export foo/);
+  assert.equal(s.runs.length, 2);
+  assert.deepEqual(s.repo.listAttempts(s.step.id).map(a => [a.model, a.tier, a.effort]), [["gpt-6.1-sol", "mid", "medium"], ["gpt-6.1-sol", "mid", "medium"]]);
+  assert.match(s.runs[1]!.prompt, /ORIGINAL TASK/);
+  assert.match(s.runs[1]!.prompt, /não alterou nada[\s\S]*missing export foo/);
+  assert.equal(s.repo.getStep(s.step.id)!.status, "failed");
+});
+
+test("the single same-model retry after no changes can still finish the step", async () => {
+  const s = setup(["missing export foo"], { changed: [false, true] });
+  assert.deepEqual(await runStep(s.deps, s.step.id), { status: "done", attempts: 2 });
+  assert.equal(s.runs[0]!.model, s.runs[1]!.model);
+});
+
+test("the no-changes retry does not fall into repair or escalation when it fails the gate", async () => {
+  const s = setup(["missing export foo", "TS2304 still broken"], { changed: [false, true] });
+  assert.equal((await runStep(s.deps, s.step.id)).status, "failed");
+  assert.deepEqual(s.repo.listAttempts(s.step.id).map(a => [a.kind, a.model]), [["task", "gpt-6.1-sol"], ["task", "gpt-6.1-sol"]]);
+});
+
+test("a repair making no changes re-checks the gate instead of returning to the ladder", async () => {
+  const s = setup(["SyntaxError: unexpected token"], { max: 2, changed: [true, false] });
+  assert.deepEqual(await runStep(s.deps, s.step.id), { status: "done", attempts: 2, note: "already satisfied" });
+  assert.deepEqual(s.repo.listAttempts(s.step.id).map(a => a.kind), ["task", "repair"]);
+});
+
+test("staged: no changes and nothing ahead of base opens no PR and is already satisfied", async () => {
+  const s = setup([], { mode: "staged", changed: [false] });
+  const exec: Exec = async (cmd, args, opts) => cmd === "git" && args[0] === "rev-list" ? ok("0\n") : s.exec(cmd, args, opts);
+  assert.deepEqual(await runStep({ ...s.deps, exec }, s.step.id), { status: "done", attempts: 1, note: "already satisfied" });
+  assert.ok(!s.exec.calls.some(c => c.cmd === "gh" || c.args[0] === "push"));
+});
+
+test("without a local gate, no changes cannot be proven satisfied: one same-model retry, then failed", async () => {
+  const s = setup([], { mode: "pr", changed: [false, false] });
+  s.deps.cfg.verify.local = { cmds: [], timeout_s: 60 };
+  const out = await runStep(s.deps, s.step.id);
+  assert.equal(out.status, "failed");
+  assert.match((out as { reason: string }).reason, /no local gate/);
+  assert.deepEqual(s.runs.map(r => r.model), ["gpt-6.1-sol", "gpt-6.1-sol"]);
+  assert.ok(!s.exec.calls.some(c => c.cmd === "gh"));
+});
+
+test("quota on the no-changes retry waits instead of switching models", async () => {
+  const s = setup(["missing export foo"], { changed: [false], agent: [good, { ...good, ok: false, quota_exhausted: true }] });
+  assert.equal((await runStep(s.deps, s.step.id)).status, "waiting_quota");
+  assert.deepEqual(s.runs.map(r => r.model), ["gpt-6.1-sol", "gpt-6.1-sol"]);
 });
 
 test("repeated simple repairs raise effort to medium and consume max_attempts", async () => {

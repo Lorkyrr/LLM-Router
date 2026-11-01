@@ -123,15 +123,16 @@ test("whole tier out of quota waits instead of dropping a tier", async () => {
   assert.equal(s.repo.getStep(s.step.id)!.status, "waiting_quota");
 });
 
-test("an agent that changes nothing fails the attempt", async () => {
+test("pr mode without a local gate: no changes is unverifiable and retries once with the same model", async () => {
   const s = setup([good], ["green"], "mid", [false]);
   const r = await runStep(s.deps, s.step.id);
   assert.deepEqual(r, { status: "done", attempts: 2 });
-  assert.match(s.repo.listAttempts(s.step.id)[0]!.failure_reason ?? "", /no changes/);
+  assert.match(s.repo.listAttempts(s.step.id)[0]!.failure_reason ?? "", /no changes.*no local gate/);
+  assert.equal(s.runs[0]!.model, s.runs[1]!.model);
 });
 
 test("failure on a simple_edit step tries the other available cheap model before moving up a tier", async () => {
-  const s = setup([good], ["green"], "cheap", [false]);
+  const s = setup([bad("model failure"), good], ["green"], "cheap");
   s.repo.updateTask(s.step.task_id, { phase: "simple_edit" });
   assert.deepEqual(await runStep(s.deps, s.step.id), { status: "done", attempts: 2 });
   assert.deepEqual(s.repo.listAttempts(s.step.id).map((a) => [a.model, a.tier]), [["haiku-5-5", "cheap"], ["gpt-6-luna", "cheap"]]);
@@ -139,7 +140,7 @@ test("failure on a simple_edit step tries the other available cheap model before
 
 test("only after every cheap model failed does the step escalate, within max_attempts", async () => {
   const wide = { ...cfg, escalation: { ...cfg.escalation, max_attempts: 4 } };
-  const s = setup([good], [], "cheap", [false, false, false, false]);
+  const s = setup([bad("model failure")], [], "cheap");
   const r = await runStep({ ...s.deps, cfg: wide }, s.step.id);
   assert.equal(r.status, "failed");
   assert.deepEqual(s.repo.listAttempts(s.step.id).map((a) => [a.model, a.tier]), [

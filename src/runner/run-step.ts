@@ -1,5 +1,5 @@
 import { join } from "node:path";
-import type { Config, Step, Tier } from "../config.ts";
+import type { Config, Effort, Step, Tier } from "../config.ts";
 import type { Adapter, AdapterName } from "../adapters/types.ts";
 import { availability } from "../catalog/check.ts";
 import type { Exec } from "../exec.ts";
@@ -24,7 +24,7 @@ export type StepDeps = {
   lease?: Lease;
 };
 export type StepOutcome =
-  | { status: "done"; attempts: number }
+  | { status: "done"; attempts: number; note?: "already satisfied" }
   // staged: passou no gate local e o PR está aberto; o CI e o merge esperam o `release`.
   | { status: "pr_open"; attempts: number }
   | { status: "failed"; attempts: number; reason: string }
@@ -39,6 +39,10 @@ const promptFor = (brief: string, lastFailure: string | null) =>
   lastFailure ? `${brief}\n\nA tentativa anterior falhou: ${lastFailure}\nCorrija isso neste mesmo branch.` : brief;
 
 type Repair = { original: Step; diagnostic: string; choice?: ReturnType<typeof repairFor> };
+type Retry = Step & { name: string; prompt: string };
+
+const missingPrompt = (brief: string, gate: string) =>
+  `${brief}\n\nA tentativa anterior não alterou nada, mas os critérios de aceite ainda não são atendidos. O gate falhou com:\n${gate}\nFaça as mudanças que faltam neste mesmo branch.`;
 
 export async function runStep(d: StepDeps, stepId: string): Promise<StepOutcome> {
   const { cfg, repo } = d;
@@ -100,9 +104,16 @@ export async function runStep(d: StepDeps, stepId: string): Promise<StepOutcome>
     let lastFailure: string | null = null;
     let repairs = 0;
     let pendingRepair: Repair | null = null;
+    // Sem mudanças não escala: o gate decide se a base já atende; se não, uma única nova tentativa com o mesmo modelo.
+    let retry: Retry | null = null;
+    let retried = false;
 
     for (;;) {
-      const rungStep = failures >= cfg.escalation.max_attempts ? null : stepFor(cfg, step.tier as Tier, rung);
+      if (retried && !retry) {
+        repo.updateStep(stepId, { status: "failed" });
+        return { status: "failed", attempts: n, reason: lastFailure ?? "no attempts left" };
+      }
+      const rungStep: Step | null = retry ?? (failures >= cfg.escalation.max_attempts ? null : stepFor(cfg, step.tier as Tier, rung));
       if (!rungStep) {
         repo.updateStep(stepId, { status: "failed" });
         return { status: "failed", attempts: n, reason: lastFailure ?? "no attempts left" };
@@ -119,19 +130,19 @@ export async function runStep(d: StepDeps, stepId: string): Promise<StepOutcome>
         const diagnostic = repair.diagnostic.split("\n").slice(-60).join("\n");
         repairPrompt = `Corrija apenas o erro do gate abaixo neste mesmo worktree/branch. Não refaça a tarefa nem amplie o escopo.\n\nErro do gate (cauda; arquivos/testes falhos quando informados):\n${diagnostic}\n\nDiff atual do branch:\n${diff.stdout}`;
       }
-      const choice = repair?.choice ?? rungStep;
+      const choice: Step = repair?.choice ?? rungStep;
       // Passos mid de um plano strong são implementação; escalada cheap→mid também.
       const phase = repair && choice.tier === "cheap" ? "simple_edit"
         : !taskPhase ? undefined : cfg.phases[taskPhase].tier === choice.tier ? taskPhase
         : choice.tier === "mid" ? "implementing" : choice.tier === "cheap" ? "simple_edit" : "integration";
       const states: Record<string, { available: boolean }> = { ...availability(repo) };
       if (!repair) for (const t of tried) states[t] = { available: false };
-      const name = selectModel(cfg, choice.tier, states, phase);
+      const name: string | null = retry ? (states[retry.name]?.available === false ? null : retry.name) : selectModel(cfg, choice.tier, states, phase);
       if (!name && repair) {
         pendingRepair = null;
         continue;
       }
-      if (!name && tried.size) {
+      if (!name && tried.size && !retry) {
         rung++;
         tried.clear();
         continue;
@@ -142,7 +153,10 @@ export async function runStep(d: StepDeps, stepId: string): Promise<StepOutcome>
       }
       const model = cfg.models[name]!;
       if (!repair) repairs = 0;
-      const effort = !repair && rung === 1 && step.effort ? step.effort : choice.effort;
+      const current = retry as Retry | null;
+      const effort: Effort = current?.effort ?? (!repair && rung === 1 && step.effort ? step.effort : choice.effort);
+      retried ||= !!retry;
+      retry = null;
       const attempt = repo.insertAttempt({
         step_id: stepId, n: ++n, adapter: model.adapter, model: name, tier: choice.tier, effort, runner: d.runner,
         kind: repair ? "repair" : "task", reason: repair?.choice?.reason ?? lastFailure ?? "initial task",
@@ -151,7 +165,7 @@ export async function runStep(d: StepDeps, stepId: string): Promise<StepOutcome>
 
       const title = step.brief.split("\n")[0]!.slice(0, 72);
       const run = await d.adapters[model.adapter].run({
-        model: model.id, effort, prompt: repairPrompt ?? promptFor(step.brief, lastFailure), cwd: worktree,
+        model: model.id, effort, prompt: repairPrompt ?? current?.prompt ?? promptFor(step.brief, lastFailure), cwd: worktree,
         timeoutMs: AGENT_TIMEOUT_MS,
       });
       const usage = {
@@ -176,6 +190,8 @@ export async function runStep(d: StepDeps, stepId: string): Promise<StepOutcome>
           repo.upsertModel({ name, adapter: model.adapter, tier: choice.tier, preference: cfg.tiers[choice.tier].indexOf(name) });
           repo.setAvailability(name, { available: false, quota_state: "exhausted" });
           finish({ failure_reason: "quota exhausted" });
+          // A retentativa sem mudanças exige o mesmo modelo: sem cota ela espera em vez de trocar de modelo.
+          retry = current;
           continue;
         }
         lastFailure = run.error ?? "agent failed";
@@ -186,18 +202,16 @@ export async function runStep(d: StepDeps, stepId: string): Promise<StepOutcome>
       }
 
       // local e staged commitam antes do gate; o modo pr deixa o commit para o publishBranch.
-      if (mode !== "pr" && !(await commitAll(d.exec, { worktree, title }))) {
-        lastFailure = "agent made no changes";
-        finish({ failure_reason: lastFailure });
-        failures++;
-        if (!repair) tried.add(name);
-        continue;
-      }
-      if (mode !== "pr") await backup(branch, worktree);
+      let unchanged = mode !== "pr" && !(await commitAll(d.exec, { worktree, title }));
+      if (mode !== "pr" && !unchanged) await backup(branch, worktree);
       const localOpts = { worktree, cmds: cfg.verify.local?.cmds ?? [], timeoutMs: (cfg.verify.local?.timeout_s ?? 0) * 1000 };
+      // Sem gate local não há como provar que a base já atende: conta como critério não verificado.
+      const noGate: Verdict = { result: "failed", reason: "no local gate (verify.local.cmds) to check the base", gate: true };
       let verdict: Verdict;
       let stage = "";
-      if (mode === "local") {
+      if (unchanged && !localOpts.cmds.length) {
+        verdict = noGate;
+      } else if (mode === "local") {
         verdict = await verifyLocal(d.exec, { ...localOpts, repoDir: d.repoDir, branch, base: d.base, autoMerge: cfg.verify.auto_merge });
       } else {
         // Estágio 1 (staged): rebase no remoto e checks locais; nada vai ao GitHub antes de passar.
@@ -209,44 +223,49 @@ export async function runStep(d: StepDeps, stepId: string): Promise<StepOutcome>
           const checks = rebased.result === "conflict" ? rebased : await runLocalChecks(d.exec, localOpts);
           if (checks.result !== "passed") gate = checks;
         }
-        if (gate) {
-          verdict = gate;
+        // Staged sem mudança e sem commits à frente do base: o gate acima já validou a base, não há PR a abrir.
+        const nothingToPublish = unchanged && !gate &&
+          (await d.exec("git", ["rev-list", "--count", `origin/${d.base}..HEAD`], { cwd: worktree })).stdout.trim() === "0";
+        if (gate || nothingToPublish) {
+          verdict = gate ?? { result: "passed" };
           stage = "local_";
         } else {
           // Modo pr: PR + CI do GitHub + merge agora. Staged: só abre o PR; CI e merge esperam o sinal (`release`).
           const pushOpts = { worktree, branch, base: d.base, title, body: step.brief, ...(prNumber ? { pr_number: prNumber } : {}) };
           const pub = mode === "pr" ? await publishBranch(d.exec, pushOpts) : await pushBranch(d.exec, pushOpts);
           if (!pub.changed) {
-            lastFailure = "agent made no changes";
-            finish({ failure_reason: lastFailure });
-            failures++;
-            if (!repair) tried.add(name);
-            continue;
-          }
-          prNumber = pub.pr_number;
-          repo.updateStep(stepId, { pr_number: prNumber });
-          if (mode === "staged") {
-            finish({ ci_result: "pr_open" });
-            repo.updateStep(stepId, { status: "pr_open" });
-            return { status: "pr_open", attempts: n };
-          }
+            unchanged = true;
+            verdict = localOpts.cmds.length ? await runLocalChecks(d.exec, localOpts) : noGate;
+            stage = "local_";
+          } else {
+            prNumber = pub.pr_number;
+            repo.updateStep(stepId, { pr_number: prNumber });
+            if (mode === "staged") {
+              finish({ ci_result: "pr_open" });
+              repo.updateStep(stepId, { status: "pr_open" });
+              return { status: "pr_open", attempts: n };
+            }
 
-          // O runner local só fica ligado enquanto o CI deste PR roda.
-          await d.lease?.acquire();
-          verdict = await verifyAndMerge(d.exec, {
-            cwd: worktree, pr: prNumber, deleteBranch: cfg.verify.delete_branch, autoMerge: cfg.verify.auto_merge,
-            timeoutMs: CI_TIMEOUT_MS, branch,
-          }).finally(() => d.lease?.release());
+            // O runner local só fica ligado enquanto o CI deste PR roda.
+            await d.lease?.acquire();
+            verdict = await verifyAndMerge(d.exec, {
+              cwd: worktree, pr: prNumber, deleteBranch: cfg.verify.delete_branch, autoMerge: cfg.verify.auto_merge,
+              timeoutMs: CI_TIMEOUT_MS, branch,
+            }).finally(() => d.lease?.release());
+          }
         }
       }
+      const done = (): StepOutcome => {
+        repo.updateStep(stepId, { status: "done" });
+        return unchanged ? { status: "done", attempts: n, note: "already satisfied" } : { status: "done", attempts: n };
+      };
       if (verdict.result === "passed") {
         // auto_merge off: o trabalho fica no branch/worktree para revisão; limpar apagaria o resultado.
-        finish({ ci_result: "passed" });
-        repo.updateStep(stepId, { status: "done" });
-        return { status: "done", attempts: n };
+        finish({ ci_result: unchanged ? "already satisfied" : "passed" });
+        return done();
       }
       if (verdict.result === "merged") {
-        finish({ ci_result: "merged" });
+        finish({ ci_result: unchanged ? "already satisfied" : "merged" });
         const basePublished = mode === "local" && cfg.verify.push === "always"
           ? await backupBase(d.exec, { repoDir: d.repoDir, base: d.base }) : false;
         // Sem isto cada passo deixa um worktree e um branch local para trás; falha de limpeza não desfaz o merge.
@@ -254,8 +273,14 @@ export async function runStep(d: StepDeps, stepId: string): Promise<StepOutcome>
         await d.exec("git", ["branch", "-D", branch], { cwd: d.repoDir });
         // Só o modo local mergeia aqui (pr/staged apagam o remoto no CI/release); sem merge o remoto fica como backup.
         if (basePublished && cfg.verify.delete_branch) await deleteRemoteBranch(d.exec, { repoDir: d.repoDir, branch });
-        repo.updateStep(stepId, { status: "done" });
-        return { status: "done", attempts: n };
+        return done();
+      }
+      if (unchanged) {
+        lastFailure = `agent made no changes; acceptance not met: ${verdict.reason}`;
+        finish({ ci_result: stage + verdict.result, failure_reason: lastFailure });
+        failures++;
+        if (!retried) retry = { tier: choice.tier, effort, name, prompt: missingPrompt(step.brief, verdict.reason) };
+        continue;
       }
       lastFailure = verdict.reason;
       finish({ ci_result: stage + verdict.result, failure_reason: verdict.reason });
