@@ -36,7 +36,7 @@ test("checkModels pings every configured model and stores the result with its ti
   assert.equal(Object.keys(rows).length, Object.keys(cfg.models).length);
   assert.equal(rows["haiku-5-5"]?.available, false);
   assert.equal(rows["haiku-5-5"]?.quota_state, "exhausted");
-  assert.equal(rows["grok-fast"]?.preference, 1);
+  assert.equal(rows["gpt-6-luna"]?.preference, 1);
   assert.equal(rows["opus-5-5"]?.tier, "strong");
 });
 

@@ -13,8 +13,6 @@ models:
     price: { input: 0.1, output: 0.5, cache_read: 0.01, cache_write: 0.125 }
     pricing: { source: "https://platform.claude.com/docs/en/models/haiku-5-5/overview", checked_at: "2026-10-30", basis: standard_short_context }
     guidance: "Triagem e extração simples em low; medium para tarefas com ferramentas. Preços-base até 100k tokens de prompt."
-  grok-fast:
-    { adapter: grok-build, id: grok-4.7-build-fast, tier: cheap, price: { input: 0.5, output: 2, cache_read: 0.05, cache_write: 0.5 } }
   sonnet-5-5:
     adapter: claude-code
     id: claude-sonnet-5-5
@@ -29,8 +27,9 @@ models:
     price: { input: 4, output: 20, cache_read: 0.2, cache_write: 5 }
     pricing: { source: "https://platform.claude.com/docs/en/about-claude/pricing", checked_at: "2026-10-30", basis: standard_short_context }
     guidance: "Planejamento, refatoração e trabalho longo; high é escolha conservadora do router, medium é o padrão oficial. Entregar brief verificável ao implementador."
-  grok-reasoning:
-    { adapter: grok-build, id: grok-4.7, tier: strong, price: { input: 3, output: 15, cache_read: 0.3, cache_write: 3 } }
+  # desativado por enquanto (usar só GPT e Claude)
+  # grok-reasoning:
+  #   { adapter: grok-build, id: grok-4.7, tier: strong, price: { input: 3, output: 15, cache_read: 0.3, cache_write: 3 } }
 
   # OpenAI: USD/1M tokens, API Standard, contexto <=272k, cache-write de 30min.
   # Referência de custo, não fatura da assinatura. JSONL não informa custos de ferramentas.
@@ -67,9 +66,9 @@ models:
 
 # Ordem = preferência. Fallback mantém a categoria; só reparos simples podem usar cheap.
 tiers:
-  cheap: [haiku-5-5, grok-fast, gpt-6-luna]
+  cheap: [haiku-5-5, gpt-6-luna]
   mid: [sonnet-5-5, gpt-6.1-sol, gpt-6.1-terra]
-  strong: [opus-5-5, grok-reasoning, gpt-6-astra]
+  strong: [opus-5-5, gpt-6-astra]  # grok desativado por enquanto
 
 phases:
   planning: { tier: strong, effort: high, prefer: [opus-5-5, gpt-6-astra] }

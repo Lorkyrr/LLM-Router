@@ -94,7 +94,7 @@ test("quota exhaustion on the triage model falls back to the next cheap model", 
   };
   const r = await triage(cfg, adapters(adapter), "x", { cwd, repo });
   assert.equal(r.tier, "cheap");
-  assert.deepEqual(models, ["claude-haiku-5-5", "grok-4.7-build-fast"]);
+  assert.deepEqual(models, ["claude-haiku-5-5", "gpt-6-luna"]);
   assert.equal(repo.listModels().find((m) => m.name === "haiku-5-5")?.available, false);
 });
 
@@ -104,9 +104,7 @@ test("an unavailable triage model is skipped for the next cheap one; none availa
   repo.upsertModel({ name: "haiku-5-5", adapter: "claude-code", tier: "cheap", preference: 0 });
   repo.setAvailability("haiku-5-5", { available: false, quota_state: "exhausted" });
   await triage(cfg, adapters(f.adapter), "x", { cwd, repo });
-  assert.deepEqual(f.models, ["grok-4.7-build-fast"]);
-  repo.upsertModel({ name: "grok-fast", adapter: "grok-build", tier: "cheap", preference: 1 });
-  repo.setAvailability("grok-fast", { available: false, quota_state: "exhausted" });
+  assert.deepEqual(f.models, ["gpt-6-luna"]);
   for (const name of cfg.tiers.cheap) {
     const m = cfg.models[name]!;
     repo.upsertModel({ name, adapter: m.adapter, tier: m.tier, preference: cfg.tiers.cheap.indexOf(name) });
