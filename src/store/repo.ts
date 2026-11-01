@@ -3,8 +3,8 @@ import type { DatabaseSync, SQLInputValue, SQLOutputValue } from "node:sqlite";
 import type { Effort, Phase, Tier } from "../config.ts";
 import type { Role } from "../planner/selection.ts";
 
-export type TaskStatus = "queued" | "planning" | "running" | "done" | "failed" | "waiting_quota" | "awaiting_release";
-export type StepStatus = "pending" | "running" | "done" | "failed" | "waiting_quota" | "pr_open";
+export type TaskStatus = "queued" | "planning" | "running" | "done" | "failed" | "waiting_quota" | "awaiting_review" | "awaiting_release";
+export type StepStatus = "pending" | "running" | "done" | "failed" | "waiting_quota" | "awaiting_review" | "pr_open";
 export type Runner = "self_hosted" | "hosted";
 export type Channel = "grok_bot" | "claude";
 
@@ -23,6 +23,7 @@ export type Step = Stamps & {
   branch: string | null; pr_number: number | null; status: StepStatus;
   phase: Phase | null; effort: Effort | null; reason: string | null; role?: Role | null;
   handoff: StepHandoff | null;
+  acceptance: string[]; risk: "low" | "high" | null; risk_reasons: string[];
 };
 export type Attempt = Stamps & {
   step_id: string; n: number; adapter: string; model: string; tier: Tier; effort: Effort; runner: Runner;
@@ -74,7 +75,9 @@ export function makeRepo(db: DatabaseSync, now: () => string = () => new Date().
 
   const toStep = (r: Row): Step =>
     ({ ...r, depends_on: JSON.parse(String(r.depends_on)), files: JSON.parse(String(r.files)),
-      handoff: r.handoff ? JSON.parse(String(r.handoff)) : null }) as unknown as Step;
+      handoff: r.handoff ? JSON.parse(String(r.handoff)) : null,
+      acceptance: r.acceptance ? JSON.parse(String(r.acceptance)) : [],
+      risk_reasons: r.risk_reasons ? JSON.parse(String(r.risk_reasons)) : [] }) as unknown as Step;
   const toModel = (r: Row): ModelRow => ({ ...r, available: r.available === 1 }) as unknown as ModelRow;
   const toMessage = (r: Row): Message => ({ ...r, delivered: r.delivered === 1 }) as unknown as Message;
 
@@ -107,7 +110,11 @@ export function makeRepo(db: DatabaseSync, now: () => string = () => new Date().
     insertStep: (s: {
       task_id: string; seq: number; brief: string; tier: Tier; depends_on: string[]; files: string[];
       phase?: Phase; effort?: Effort; reason?: string; role?: Role;
-    }): Step => toStep(insert("steps", { ...s, depends_on: json(s.depends_on), files: json(s.files), status: "pending" })),
+      acceptance?: string[]; risk?: "low" | "high"; risk_reasons?: string[];
+    }): Step => toStep(insert("steps", {
+      ...s, depends_on: json(s.depends_on), files: json(s.files), status: "pending",
+      acceptance: json(s.acceptance ?? []), risk_reasons: json(s.risk_reasons ?? []),
+    })),
     getStep: (id: string): Step | undefined => {
       const r = byId("steps", id);
       return r && toStep(r);

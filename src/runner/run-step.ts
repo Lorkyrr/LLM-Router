@@ -29,15 +29,19 @@ export type StepOutcome =
   // staged: passou no gate local e o PR está aberto; o CI e o merge esperam o `release`.
   | { status: "pr_open"; attempts: number }
   | { status: "failed"; attempts: number; reason: string }
-  | { status: "waiting_quota"; attempts: number };
+  | { status: "waiting_quota"; attempts: number }
+  // revisão cruzada obrigatória sem revisor disponível: branch/commit gravados, sem merge nem PR.
+  | { status: "awaiting_review"; attempts: number };
 
 // Teto por agente e por espera de CI: sem isso um CLI ou `gh pr checks --watch` travado prende o passo para sempre.
 export const AGENT_TIMEOUT_MS = 30 * 60 * 1000;
 export const CI_TIMEOUT_MS = 30 * 60 * 1000;
 
 // Sessão nova para a tarefa: só brief e falha anterior; reparos recebem diagnóstico e diff.
-const promptFor = (brief: string, lastFailure: string | null) =>
-  lastFailure ? `${brief}\n\nA tentativa anterior falhou: ${lastFailure}\nCorrija isso neste mesmo branch.` : brief;
+const promptFor = (brief: string, lastFailure: string | null, acceptance: string[] = []) => {
+  const base = acceptance.length ? `${brief}\n\nCritérios de aceite:\n${acceptance.map((a) => `- ${a}`).join("\n")}` : brief;
+  return lastFailure ? `${base}\n\nA tentativa anterior falhou: ${lastFailure}\nCorrija isso neste mesmo branch.` : base;
+};
 
 type Repair = { original: Step; diagnostic: string; choice?: ReturnType<typeof repairFor> };
 type Retry = Step & { name: string; prompt: string };
@@ -47,7 +51,7 @@ const missingPrompt = (brief: string, gate: string) =>
 
 export type StepExecution = {
   context: { dependencies: StepHandoff[] };
-  beforeVerify(input: { worktree: string; model: string; run: RunResult }): Promise<Verdict | { result: "waiting_quota" } | undefined>;
+  beforeVerify(input: { worktree: string; model: string; run: RunResult }): Promise<Verdict | { result: "waiting_quota" | "awaiting_review" } | undefined>;
 };
 
 export async function runStep(d: StepDeps, stepId: string, execution?: StepExecution): Promise<StepOutcome> {
@@ -174,7 +178,7 @@ export async function runStep(d: StepDeps, stepId: string, execution?: StepExecu
 
       const title = step.brief.split("\n")[0]!.slice(0, 72);
       const run: RunResult = await d.adapters[model.adapter].run({
-        model: model.id, effort, prompt: repairPrompt ?? (current?.prompt ?? promptFor(step.brief, lastFailure)) +
+        model: model.id, effort, prompt: repairPrompt ?? (current?.prompt ?? promptFor(step.brief, lastFailure, step.acceptance)) +
           (execution?.context.dependencies.length ? `\n\nContexto das dependências (JSON):\n${JSON.stringify(execution.context)}` : ""), cwd: worktree,
         timeoutMs: AGENT_TIMEOUT_MS,
       });
@@ -216,10 +220,10 @@ export async function runStep(d: StepDeps, stepId: string, execution?: StepExecu
       let unchanged = (mode !== "pr" || !!execution) && !(await commitAll(d.exec, { worktree, title }));
       const reviewed: Awaited<ReturnType<StepExecution["beforeVerify"]>> = unchanged ? undefined : await execution?.beforeVerify({ worktree, model: name, run });
       n = repo.listAttempts(stepId).length;
-      if (reviewed?.result === "waiting_quota") {
-        finish({ ci_result: "review_waiting_quota" });
-        repo.updateStep(stepId, { status: "waiting_quota" });
-        return { status: "waiting_quota", attempts: n };
+      if (reviewed?.result === "waiting_quota" || reviewed?.result === "awaiting_review") {
+        finish({ ci_result: `review_${reviewed.result}` });
+        repo.updateStep(stepId, { status: reviewed.result });
+        return { status: reviewed.result, attempts: n };
       }
       if (mode !== "pr" && !unchanged) await backup(branch, worktree);
       const localOpts = { worktree, cmds: cfg.verify.local?.cmds ?? [], timeoutMs: (cfg.verify.local?.timeout_s ?? 0) * 1000 };

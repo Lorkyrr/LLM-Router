@@ -14,6 +14,7 @@ export function storeItems(repo: Repo, taskId: string, items: Subtask[]): Step[]
       task_id: taskId, seq: i + 1, brief: item.brief, tier: item.tier,
       phase: item.phase, effort: item.effort, reason: item.reason, role: item.role,
       depends_on: item.depends_on.map((d) => ids[d - 1]!), files: item.files,
+      acceptance: item.acceptance, risk: item.risk, risk_reasons: item.risk_reasons,
     });
     ids.push(step.id);
     return step;
