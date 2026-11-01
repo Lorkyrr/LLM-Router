@@ -1,5 +1,6 @@
 import type { Step } from "../store/repo.ts";
 import { runStep, type StepDeps } from "./run-step.ts";
+import { backupState } from "./backup-state.ts";
 
 // pr_open (staged) só aparece quando há PRs esperando o `release`; para dependências conta como satisfeito (o dependente parte do branch dele).
 export type PlanOutcome = { done: number[]; failed: number[]; blocked: number[]; waiting_quota: number[]; pr_open?: number[] };
@@ -52,6 +53,7 @@ export async function runPlan(d: StepDeps, taskId: string): Promise<PlanOutcome>
     settled = await Promise.all(steps.map(start));
   } catch (e) {
     d.repo.updateTask(taskId, { status: "failed" });
+    await backupState(d);
     throw e;
   }
 
@@ -61,5 +63,6 @@ export async function runPlan(d: StepDeps, taskId: string): Promise<PlanOutcome>
   // Bloqueado sem passo em espera de cota só acontece por ciclo/dependência inválida: é falha do plano.
   const status = out.failed.length ? "failed" : out.waiting_quota.length ? "waiting_quota" : out.blocked.length ? "failed" : out.pr_open ? "awaiting_release" : "done";
   d.repo.updateTask(taskId, { status });
+  await backupState(d);
   return out;
 }

@@ -34,7 +34,7 @@ Conecte `npm start` pelo cliente MCP via stdio. A inicialização faz pings pago
 
 ## Modo local (sem GitHub nem CI)
 
-`ROUTER_LOCAL_TEST="npm run typecheck && npm test"` (ou `verify.mode: local` + `verify.local.cmds` no catálogo; comandos em ordem, o primeiro que falhar encerra) faz `run_plan` trabalhar só com Git local. Cada passo roda num worktree em `.worktrees/` e o comando de teste no worktree decide o resultado. Teste vermelho reentra na escada de esforço com a saída no prompt. Teste verde faz rebase no base e fast-forward no checkout do projeto, serializado entre passos paralelos. Sem `git fetch`, PR nem `gh`; o branch do passo sobe para `origin` como backup (`verify.push`, abaixo).
+`ROUTER_LOCAL_TEST="npm run typecheck && npm test"` (ou `verify.mode: local` + `verify.local.cmds` no catálogo; comandos em ordem, o primeiro que falhar encerra) faz `run_plan` verificar e mesclar com Git local. Cada passo roda num worktree em `.worktrees/` e o comando de teste no worktree decide o resultado. Teste vermelho reentra na escada de esforço com a saída no prompt. Teste verde faz rebase no base e fast-forward no checkout do projeto, serializado entre passos paralelos. A verificação dispensa fetch, PR e `gh`; os backups publicam os branches dos passos, o base mesclado e o histórico (`verify.push`, abaixo).
 
 ### Modo staged: gate local e depois PR + CI + auto-merge
 
@@ -43,9 +43,24 @@ Conecte `npm start` pelo cliente MCP via stdio. A inicialização faz pings pago
 O sinal é a ferramenta MCP `release` (ou `gh workflow run router-release.yml`). O workflow compara todos os PRs `router/*` abertos (arquivos em comum), roda o CI de cada um sobre a base atualizada (`ci/pr-ci.sh`), faz merge (rebase) dos verdes, apaga o branch e comenta nos vermelhos, que ficam abertos. PR empilhado sobre um que não passou é pulado. Depois, `release {sync_only: true}` (ou o fim do workflow disparado pelo MCP) atualiza o estado local: mergeado vira `done` e perde worktree/branch locais. Passos dependentes de um PR ainda aberto partem do branch dele. O `router-verify` ignora PRs `router/*`. `verify.auto_merge` não vale no `staged`: quem mergeia é o `release`. Exige remoto, `gh` autenticado e runner de CI; veja `docs/staged-verify-design.md`.
 
 - O checkout de `ROUTER_REPO_DIR` precisa estar no branch base: `ROUTER_BASE` se definido, senão o branch em checkout quando o servidor sobe (os worktrees dos passos partem dele); caso contrário o passo falha em vez de mesclar no branch errado. Arquivos não commitados que colidam com o merge também o fazem falhar.
-- `verify.push: always|never` (padrão `always`): todo branch `router/step-*` é publicado em `origin` (`git push -u`) ao ser criado e de novo após cada tentativa com commits, inclusive as que falham, em qualquer `verify.mode`; assim o trabalho sobrevive à perda do PC. Falha de push (sem rede ou credencial) só gera um aviso no stderr e o próximo push tenta de novo. No modo `local`, com merge (`auto_merge`) e `delete_branch: true`, o branch remoto é apagado; sem merge ele fica. `never` desliga esse backup (os modos `pr` e `staged` ainda dão push para abrir o PR). Limites: o merge no base local não é publicado, e uma tentativa que falha no modo `pr` só sobe se o agente tiver commitado.
+- `verify.push: always|never` (padrão `always`): todo branch `router/step-*` é publicado em `origin` (`git push -u`) ao ser criado e de novo após cada tentativa com commits, inclusive as que falham, em qualquer `verify.mode`. No modo `local`, após `auto_merge`, o base local também sobe com `git push origin refs/heads/<base>:refs/heads/<base>`, sem force. Falha de push só avisa no stderr e não muda o resultado do passo; o próximo merge com push tenta publicar o base novamente, incluindo merges pendentes. O branch remoto do passo só é apagado com `delete_branch: true` e publicação bem-sucedida do base; sem merge ou com push do base falhando, fica preservado. `never` desliga os backups de passos, base e histórico (os modos `pr` e `staged` ainda dão push para abrir o PR). Uma tentativa que falha no modo `pr` só sobe se o agente tiver commitado.
 - `verify.auto_merge: false` deixa o branch `router/step-*` e o worktree para revisão; o passo conta como `done`. Nos modos `pr` e `staged` o PR fica aberto após o CI verde, sem merge.
 - Os testes não rodam de novo após o rebase. Teste com git real e agente falso: `src/runner/run-step.local.test.ts`. Nenhum modelo real foi usado nesse fluxo.
+
+### Backup do histórico
+
+Ao fim de cada `run_plan`, depois de gravar o estado final (inclusive falha, espera de cota e `awaiting_release`), `verify.push: always` publica um snapshot de todo o `router.db` selecionado em `origin/router/state`, no arquivo `history.jsonl`. Não há checkout, alteração do índice, commit no branch de trabalho nem force-push. O branch dedicado começa com um commit raiz e os próximos commits seguem seu histórico remoto. Snapshot idêntico não cria commit. Falhas de rede, credenciais ou concorrência só avisam; o próximo `run_plan` tenta novamente com o snapshot completo. Sem rede, não há garantia de backup externo até uma publicação bem-sucedida.
+
+O JSONL v1 tem uma linha de schema e linhas `task`, `step` e `attempt`, ordenadas de forma determinística. Preserva IDs, dependências, estados, datas UTC, PR, agente/modelo/esforço, resultado da verificação, tokens e `est_cost_usd` (incluindo `null` quando ausente). Custos continuam registrados/estimados, com `billing_verified: false`. Uma lista positiva de colunas exclui request, brief, caminhos de arquivos, branch, canal, mensagens, motivo de falha, configuração e credenciais; prompts e logs não são publicados. É um backup do histórico operacional e de custos, sem o texto necessário para reexecutar tarefas ou restaurar integralmente o banco.
+
+Use `ROUTER_DB` separado por projeto: o banco padrão é global e todos os seus registros operacionais serão exportados. O último snapshot corresponde ao banco da máquina que publicou; snapshots anteriores ficam no histórico Git. Máquinas com bancos distintos não têm sincronização/união de registros automática.
+
+Para consultar sem mudar o checkout:
+
+```bash
+git fetch origin router/state
+git show FETCH_HEAD:history.jsonl
+```
 
 ## Cluster kind no CI (só quando necessário)
 

@@ -118,7 +118,7 @@ verify:
   mode: ci            # juiz por LLM só como opção, desligado
   auto_merge: true    # exige todos os checks verdes e rebase na main
   delete_branch: true
-  push: always        # always|never: sobe todo branch de passo para origin (backup); padrão always
+  push: always        # always|never: backup de passos, base mesclado localmente e histórico; padrão always
 
 dispatch:
   local: self-hosted   # PC ligado
@@ -161,7 +161,17 @@ dispatch:
 - O executor continua exigindo alterações Git, portanto perguntas e revisões sem alteração não têm fluxo próprio. `verify.auto_merge: false` agora para após o CI verde, com o PR aberto. Não foram corrigidos nesta extensão.
 - Diretrizes de contribuição: [AGENTS.md](AGENTS.md). Operação: [README.md](README.md). Validação: [docs/e2e-smoke.md](docs/e2e-smoke.md). Documentos em `.planning/` preservam o escopo histórico do MVP.
 
-## Correção de execução e conexão
+## Backup externo de código e estado
+
+No modo `local`, `runStep` publica o base em `origin` após o fast-forward de `auto_merge` quando `verify.push: always`. Usa refspec explícito e push normal: não reescreve o remoto nem faz pull/merge implícito. Falha ou exceção no push só avisa, preserva o resultado do passo e mantém o branch remoto do passo. O próximo merge com push envia também os merges locais pendentes. A limpeza remota exige base publicado e `delete_branch: true`.
+
+Ao finalizar `runPlan`, com o status da tarefa persistido, `runner/backup-state.ts` pede a `Repo.exportHistory()` um snapshot JSONL v1 consistente (SAVEPOINT SQLite). A seleção explícita exporta tasks, steps e attempts com relações, estados, tempos, modelo/esforço, tokens e custos registrados/estimados. Não exporta texto livre, caminhos, mensagens, erros, configuração ou credenciais. O schema marca `billing_verified: false`; ausência de custo/tokens permanece `null`. A ordenação e a ausência de data de exportação tornam snapshots idênticos estáveis.
+
+O publicador consulta o ref remoto `refs/heads/router/state`, busca seu objeto sem escrever `FETCH_HEAD`, cria blob (`history.jsonl`), árvore e commit via plumbing Git e publica o SHA nesse ref. Não usa checkout, índice ou atualização de refs locais; o branch de trabalho e seus arquivos ficam intactos. Sem ref remoto, cria commit raiz; com ref existente, usa-o como pai e pula commits se a árvore não mudou. Publicações no processo são serializadas; corrida externa/rejeição de push não usa force e fica para o próximo `run_plan`. Comandos têm timeout de 60 s; falhas só avisam sem imprimir saída potencialmente sensível. `verify.push: never` desliga essa publicação em qualquer modo.
+
+O snapshot abrange todo o banco selecionado, portanto a separação por projeto depende de `ROUTER_DB`. Não há união de bancos entre máquinas: cada publicação representa o banco de origem, e commits anteriores preservam snapshots anteriores. A exportação permite consultar histórico e custos, mas não restaura prompts/briefs nem substitui um backup integral privado do SQLite. Operação e consulta: [README.md](README.md#backup-do-histórico).
+
+## Transporte MCP e executor
 
 `Exec` usa descritores de arquivos temporários privados e retorna a saída após o processo terminar. Isso evita stdout/stderr descartados por Node ao identificar sockets em um sandbox restrito. Recursos são limpos em sucesso, falha e timeout.
 

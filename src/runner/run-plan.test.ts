@@ -1,9 +1,9 @@
-import { test } from "node:test";
+import { test, mock } from "node:test";
 import assert from "node:assert/strict";
 import { setTimeout as sleep } from "node:timers/promises";
 import { loadConfig } from "../config.ts";
 import type { Adapter, RunResult } from "../adapters/types.ts";
-import { fakeExec, ok } from "../../test/fixtures/fake-exec.ts";
+import { fakeExec, ok, fail } from "../../test/fixtures/fake-exec.ts";
 import { openDb } from "../store/db.ts";
 import { makeRepo } from "../store/repo.ts";
 import { runPlan } from "./run-plan.ts";
@@ -36,6 +36,8 @@ function setup(agent: (brief: string) => RunResult = () => good) {
   };
   const a = (c: { args: string[] }, ...s: string[]) => s.every((x, i) => c.args[i] === x);
   const exec = fakeExec([
+    { when: (c) => a(c, "ls-remote"), reply: { code: 2, stdout: "", stderr: "" } },
+    { when: (c) => ["hash-object", "mktree", "commit-tree"].some((arg) => c.args.includes(arg)), reply: ok("a".repeat(40) + "\n") },
     { when: (c) => a(c, "fetch"), reply: ok() },
     { when: (c) => a(c, "worktree"), reply: ok() },
     { when: (c) => a(c, "branch"), reply: ok() },
@@ -61,6 +63,51 @@ test("independent steps run in parallel and the task ends done", async () => {
   assert.equal(s.repo.getTask(s.task.id)!.status, "done");
 });
 
+test("run_plan backs up final history, including costs but excluding free text, without checking out a branch", async () => {
+  const s = setup();
+  s.mk(1);
+  const secret = "SECRET-never-export";
+  const other = s.repo.insertTask({ request: secret, source_channel: secret });
+  const step = s.repo.insertStep({ task_id: other.id, seq: 1, brief: secret, tier: "mid", files: [secret], depends_on: [] });
+  const attempt = s.repo.insertAttempt({ step_id: step.id, n: 1, adapter: "codex", model: "sol", tier: "mid", effort: "medium", runner: "hosted" });
+  s.repo.finishAttempt(attempt.id, { failure_reason: secret, est_cost_usd: 0.12, input_tokens: 42 });
+  s.repo.insertMessage({ direction: "in", channel: "claude", body: secret });
+  await runPlan(s.deps, s.task.id);
+  const calls = s.deps.exec.calls;
+  const content = calls.find((c) => c.args[0] === "hash-object")?.opts?.input;
+  assert.ok(content);
+  assert.ok(!content.includes(secret));
+  const rows = content.trim().split("\n").map((line) => JSON.parse(line));
+  assert.equal(rows.find((r) => r.type === "task" && r.id === s.task.id).status, "done");
+  assert.equal(rows.find((r) => r.type === "step" && r.task_id === s.task.id).status, "done");
+  assert.equal(rows.find((r) => r.id === attempt.id).est_cost_usd, 0.12);
+  assert.equal(rows.find((r) => r.id === attempt.id).input_tokens, 42);
+  assert.ok(calls.some((c) => c.args[0] === "push" && c.args.at(-1)?.endsWith(":refs/heads/router/state")));
+  assert.ok(!calls.some((c) => ["checkout", "switch", "update-index", "read-tree"].includes(c.args[0]!)));
+});
+
+test("history backup respects never and retries after a failed publication without failing the plan", async () => {
+  const s = setup();
+  const never = { ...s.deps.cfg, verify: { ...s.deps.cfg.verify, push: "never" as const } };
+  await runPlan({ ...s.deps, cfg: never }, s.task.id);
+  assert.equal(s.deps.exec.calls.length, 0);
+  let failPush = true;
+  const exec = fakeExec([
+    { when: (c) => c.args[0] === "push", reply: () => failPush ? fail("offline") : ok() },
+    { when: () => true, reply: (c) => s.deps.exec(c.cmd, c.args, c.opts) },
+  ]);
+  const err = mock.method(console, "error", () => {});
+  try {
+    assert.deepEqual((await runPlan({ ...s.deps, exec }, s.task.id)).failed, []);
+    assert.match(String(err.mock.calls[0]?.arguments[0]), /router\/state.*próximo/);
+    failPush = false;
+    await runPlan({ ...s.deps, exec }, s.task.id);
+    assert.equal(exec.calls.filter((c) => c.args[0] === "push").length, 2);
+  } finally {
+    err.mock.restore();
+  }
+});
+
 test("a dependent step waits for its prerequisite to be done", async () => {
   const s = setup();
   const a = s.mk(1);
@@ -79,6 +126,8 @@ test("a failed prerequisite blocks dependents but not independent steps", async 
   assert.deepEqual(await runPlan(s.deps, s.task.id), { done: [3], failed: [1], blocked: [2], waiting_quota: [] });
   assert.ok(!s.started.includes("passo 2"));
   assert.equal(s.repo.getTask(s.task.id)!.status, "failed");
+  const history = s.deps.exec.calls.find((c) => c.args[0] === "hash-object")!.opts!.input!;
+  assert.equal(JSON.parse(history.split("\n")[1]!).status, "failed");
 });
 
 test("a prerequisite waiting on quota blocks dependents and parks the task", async () => {
@@ -87,6 +136,8 @@ test("a prerequisite waiting on quota blocks dependents and parks the task", asy
   s.mk(2, [a.id]);
   assert.deepEqual(await runPlan(s.deps, s.task.id), { done: [], failed: [], blocked: [2], waiting_quota: [1] });
   assert.equal(s.repo.getTask(s.task.id)!.status, "waiting_quota");
+  const history = s.deps.exec.calls.find((c) => c.args[0] === "hash-object")!.opts!.input!;
+  assert.equal(JSON.parse(history.split("\n")[1]!).status, "waiting_quota");
 });
 
 test("a dependency on an unknown step is blocked instead of hanging", async () => {
@@ -145,6 +196,8 @@ test("staged: PRs left open count as satisfied prerequisites and the task waits 
   const one = s.mk(1);
   s.mk(2, [one.id]);
   const exec = fakeExec([
+    { when: (c) => c.args[0] === "ls-remote", reply: { code: 2, stdout: "", stderr: "" } },
+    { when: (c) => ["hash-object", "mktree", "commit-tree"].some((arg) => c.args.includes(arg)), reply: ok("a".repeat(40)) },
     { when: (c) => c.cmd === "gh" && c.args[1] === "create", reply: ok("https://github.com/o/r/pull/5") },
     { when: () => true, reply: ok(" M f\n") },
   ]);
@@ -152,5 +205,7 @@ test("staged: PRs left open count as satisfied prerequisites and the task waits 
   const out = await runPlan({ ...s.deps, cfg: staged, exec }, s.task.id);
   assert.deepEqual(out, { done: [], failed: [], blocked: [], waiting_quota: [], pr_open: [1, 2] });
   assert.equal(s.repo.getTask(s.task.id)!.status, "awaiting_release");
+  const history = exec.calls.find((c) => c.args[0] === "hash-object")!.opts!.input!;
+  assert.equal(JSON.parse(history.split("\n")[1]!).status, "awaiting_release");
   assert.equal(exec.calls.find((c) => c.args[0] === "worktree" && c.args[1] === "add" && c.args.includes("origin/router/step-" + one.id.slice(0, 8)))?.args[0], "worktree");
 });

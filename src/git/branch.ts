@@ -51,6 +51,18 @@ export async function backupBranch(exec: Exec, o: { worktree: string; branch: st
   if (r.code !== 0) console.error(`push de ${o.branch} para origin falhou (tenta de novo no próximo push): ${r.stderr.trim() || r.stdout.trim() || `exit ${r.code}`}`);
 }
 
+// Nunca reescreve o base remoto. Um push seguinte publica também os merges que ficaram pendentes.
+export async function backupBase(exec: Exec, o: { repoDir: string; base: string }): Promise<boolean> {
+  try {
+    const r = await exec("git", ["push", "origin", `refs/heads/${o.base}:refs/heads/${o.base}`], { cwd: o.repoDir, timeoutMs: 60_000 });
+    if (r.code === 0) return true;
+    throw new Error(r.stderr.trim() || r.stdout.trim() || `exit ${r.code}`);
+  } catch (e) {
+    console.error(`push de ${o.base} para origin falhou (tenta de novo no próximo push): ${e instanceof Error ? e.message : String(e)}`);
+    return false;
+  }
+}
+
 export async function deleteRemoteBranch(exec: Exec, o: { repoDir: string; branch: string }): Promise<void> {
   const r = await exec("git", ["push", "origin", "--delete", o.branch], { cwd: o.repoDir });
   if (r.code !== 0) console.error(`apagar ${o.branch} em origin falhou: ${r.stderr.trim() || r.stdout.trim() || `exit ${r.code}`}`);

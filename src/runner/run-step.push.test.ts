@@ -57,7 +57,11 @@ test("local mode publishes the branch on creation and after the attempt, then de
   const branch = `router/step-${s.step.id.slice(0, 8)}`;
   assert.deepEqual(await runStep(s.deps, s.step.id), { status: "done", attempts: 1 });
   const push = `push -u --force-with-lease origin ${branch}`;
-  assert.deepEqual(s.pushes(), [push, push, `push origin --delete ${branch}`]);
+  assert.deepEqual(s.pushes(), [push, push, "push origin refs/heads/main:refs/heads/main", `push origin --delete ${branch}`]);
+  const merge = s.exec.calls.findIndex((c) => c.args[0] === "merge");
+  const basePush = s.exec.calls.findIndex((c) => c.args.includes("refs/heads/main:refs/heads/main"));
+  assert.ok(basePush > merge);
+  assert.equal(s.exec.calls[basePush]!.opts?.cwd, "/repo");
 });
 
 test("a failing attempt is pushed too, so no work stays only on this machine", async () => {
@@ -81,7 +85,8 @@ test("push failure only warns: the step still finishes and the next push is atte
   const msgs = err.mock.calls.map((c) => String(c.arguments[0]));
   assert.equal(msgs.length, 3);
   assert.match(msgs[0]!, /push de router\/step-\w+ para origin falhou.*no network/);
-  assert.match(msgs[2]!, /apagar router\/step-\w+ em origin falhou/);
+  assert.match(msgs[2]!, /push de main para origin falhou/);
+  assert.ok(s.pushes().every((p) => !p.includes("--delete")));
   err.mock.restore();
 });
 
@@ -90,6 +95,23 @@ test("without a merge (auto_merge off) or with delete_branch off the remote bran
     const s = setup(o);
     assert.equal((await runStep(s.deps, s.step.id)).status, "done");
     assert.ok(s.pushes().length >= 2 && s.pushes().every((p) => !p.includes("--delete")), JSON.stringify(o));
+    if (o.autoMerge === false) assert.ok(!s.pushes().some((p) => p.includes("refs/heads/main")));
+  }
+});
+
+test("an exception while pushing the base only warns and preserves the remote step branch", async () => {
+  const s = setup();
+  const exec = fakeExec([
+    { when: (c) => c.args.includes("refs/heads/main:refs/heads/main"), reply: () => { throw new Error("network timeout"); } },
+    { when: () => true, reply: (c) => s.exec(c.cmd, c.args, c.opts) },
+  ]);
+  const err = quiet();
+  try {
+    assert.equal((await runStep({ ...s.deps, exec }, s.step.id)).status, "done");
+    assert.ok(!s.pushes().some((p) => p.includes("--delete")));
+    assert.match(String(err.mock.calls[0]?.arguments[0]), /push de main.*network timeout/);
+  } finally {
+    err.mock.restore();
   }
 });
 
@@ -97,4 +119,23 @@ test("verify.push never does not touch the remote", async () => {
   const s = setup({ push: "never" });
   assert.equal((await runStep(s.deps, s.step.id)).status, "done");
   assert.deepEqual(s.pushes(), []);
+});
+
+test("base push is retried by the next merged step and does not depend on delete_branch", async () => {
+  const s = setup({ deleteBranch: false });
+  const exec = fakeExec([
+    { when: (c) => c.args.includes("refs/heads/main:refs/heads/main"), reply: fail("offline") },
+    { when: () => true, reply: (c) => s.exec(c.cmd, c.args, c.opts) },
+  ]);
+  const err = quiet();
+  try {
+    assert.equal((await runStep({ ...s.deps, exec }, s.step.id)).status, "done");
+    const next = s.deps.repo.insertStep({ task_id: s.step.task_id, seq: 2, brief: "next", tier: "mid", depends_on: [], files: [] });
+    assert.equal((await runStep(s.deps, next.id)).status, "done");
+    assert.equal(exec.calls.filter((c) => c.args.includes("refs/heads/main:refs/heads/main")).length, 1);
+    assert.ok(s.pushes().includes("push origin refs/heads/main:refs/heads/main"));
+    assert.ok(!s.pushes().some((p) => p.includes("--delete")));
+  } finally {
+    err.mock.restore();
+  }
 });

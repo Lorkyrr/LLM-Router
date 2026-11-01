@@ -3,7 +3,7 @@ import type { Config, Tier } from "../config.ts";
 import type { Adapter, AdapterName } from "../adapters/types.ts";
 import { availability } from "../catalog/check.ts";
 import type { Exec } from "../exec.ts";
-import { backupBranch, commitAll, deleteRemoteBranch, publishBranch, pushBranch, startBranch } from "../git/branch.ts";
+import { backupBase, backupBranch, commitAll, deleteRemoteBranch, publishBranch, pushBranch, startBranch } from "../git/branch.ts";
 import { estimateCost } from "../policy/cost.ts";
 import { stepFor } from "../policy/escalate.ts";
 import type { Lease } from "./lease.ts";
@@ -218,11 +218,13 @@ export async function runStep(d: StepDeps, stepId: string): Promise<StepOutcome>
       }
       if (verdict.result === "merged") {
         finish({ ci_result: "merged" });
+        const basePublished = mode === "local" && cfg.verify.push === "always"
+          ? await backupBase(d.exec, { repoDir: d.repoDir, base: d.base }) : false;
         // Sem isto cada passo deixa um worktree e um branch local para trás; falha de limpeza não desfaz o merge.
         await d.exec("git", ["worktree", "remove", "--force", worktree], { cwd: d.repoDir });
         await d.exec("git", ["branch", "-D", branch], { cwd: d.repoDir });
         // Só o modo local mergeia aqui (pr/staged apagam o remoto no CI/release); sem merge o remoto fica como backup.
-        if (mode === "local" && cfg.verify.delete_branch && cfg.verify.push === "always") await deleteRemoteBranch(d.exec, { repoDir: d.repoDir, branch });
+        if (basePublished && cfg.verify.delete_branch) await deleteRemoteBranch(d.exec, { repoDir: d.repoDir, branch });
         repo.updateStep(stepId, { status: "done" });
         return { status: "done", attempts: n };
       }
