@@ -2,7 +2,7 @@ import { test, mock } from "node:test";
 import assert from "node:assert/strict";
 import { setTimeout as sleep } from "node:timers/promises";
 import { loadConfig } from "../config.ts";
-import type { Adapter, RunResult } from "../adapters/types.ts";
+import type { Adapter, RunInput, RunResult } from "../adapters/types.ts";
 import { fakeExec, ok, fail } from "../../test/fixtures/fake-exec.ts";
 import { openDb } from "../store/db.ts";
 import { makeRepo } from "../store/repo.ts";
@@ -19,10 +19,12 @@ function setup(agent: (brief: string) => RunResult = () => good) {
   const mk = (seq: number, depends_on: string[] = []) =>
     repo.insertStep({ task_id: task.id, seq, brief: `passo ${seq}`, tier: "mid", depends_on, files: [] });
   const started: string[] = [];
+  const runs: RunInput[] = [];
   let active = 0;
   let maxActive = 0;
   const adapter: Adapter = {
     async run(i) {
+      runs.push(i);
       const brief = i.prompt.split("\n")[0]!;
       started.push(brief);
       maxActive = Math.max(maxActive, ++active);
@@ -39,6 +41,7 @@ function setup(agent: (brief: string) => RunResult = () => good) {
     { when: (c) => a(c, "ls-remote"), reply: { code: 2, stdout: "", stderr: "" } },
     { when: (c) => ["hash-object", "mktree", "commit-tree"].some((arg) => c.args.includes(arg)), reply: ok("a".repeat(40) + "\n") },
     { when: (c) => a(c, "fetch"), reply: ok() },
+    { when: (c) => a(c, "diff"), reply: ok("diff --git a/f b/f\n-old\n+new\n") },
     { when: (c) => a(c, "worktree"), reply: ok() },
     { when: (c) => a(c, "branch"), reply: ok() },
     { when: (c) => a(c, "add"), reply: ok() },
@@ -51,8 +54,137 @@ function setup(agent: (brief: string) => RunResult = () => good) {
     { when: (c) => a(c, "pr", "merge"), reply: ok() },
   ]);
   const deps = { cfg, adapters: { "claude-code": adapter, "grok-build": adapter, codex: adapter }, repo, exec, repoDir: "/repo", base: "main", runner: "hosted" as const };
-  return { deps, repo, task, mk, started, maxActive: () => maxActive };
+  return { deps, repo, task, mk, started, runs, maxActive: () => maxActive };
 }
+
+test("dependents receive persisted structured brief, diff and findings, including on resume", async () => {
+  const s = setup(() => ({ ...good, text: "Contrato definido: campo nullable" }));
+  const first = s.mk(1);
+  await runPlan(s.deps, s.task.id);
+  s.mk(2, [first.id]);
+  await runPlan(s.deps, s.task.id);
+  const prompt = s.runs.at(-1)!.prompt;
+  const context = JSON.parse(prompt.split("Contexto das dependências (JSON):\n")[1]!);
+  assert.equal(context.dependencies.length, 1);
+  assert.equal(context.dependencies[0].step_id, first.id);
+  assert.equal(context.dependencies[0].brief, "passo 1");
+  assert.match(context.dependencies[0].diff, /\+new/);
+  assert.deepEqual(context.dependencies[0].findings, ["Contrato definido: campo nullable"]);
+  assert.ok(!s.runs.some(r => r.readOnly));
+});
+
+for (const author of ["gpt-6.1-sol", "sonnet-5-5"] as const) {
+  test(`risky ${author} changes require the other provider before publication`, async () => {
+    const s = setup();
+    const step = s.repo.insertStep({ task_id: s.task.id, seq: 1, brief: "Corrija autorização", tier: "mid", phase: "implementing", depends_on: [], files: ["src/auth.ts"] });
+    const reviewer = author === "gpt-6.1-sol" ? "sonnet-5-5" : "gpt-6.1-sol";
+    const adapters = Object.fromEntries(Object.entries(s.deps.adapters).map(([name, adapter]) => [name, {
+      ...adapter, async run(i: RunInput) {
+        if (!i.readOnly) return adapter.run(i);
+        s.runs.push(i);
+        assert.equal(i.model, cfg.models[reviewer]!.id);
+        assert.equal(i.effort, "medium");
+        assert.ok(!s.deps.exec.calls.some(c => c.cmd === "gh"));
+        return { ...good, text: JSON.stringify({ approved: true, findings: [] }) };
+      },
+    }]));
+    const config = { ...cfg, phases: { ...cfg.phases, implementing: { ...cfg.phases.implementing, prefer: [author] } } };
+    const out = await runPlan({ ...s.deps, cfg: config, adapters: adapters as typeof s.deps.adapters }, s.task.id);
+    assert.deepEqual(out.done, [1]);
+    assert.equal(s.runs.filter(r => r.readOnly).length, 1);
+    assert.equal(s.repo.listAttempts(step.id).filter(a => a.kind === "review").length, 1);
+  });
+}
+
+function risky(s: ReturnType<typeof setup>, seq = 1, depends_on: string[] = []) {
+  return s.repo.insertStep({ task_id: s.task.id, seq, brief: `Corrija autorização ${seq}`, tier: "mid", phase: "implementing", depends_on, files: ["src/auth.ts"] });
+}
+
+function withReviews(s: ReturnType<typeof setup>, review: (i: RunInput) => RunResult) {
+  return { ...s.deps, adapters: Object.fromEntries(Object.entries(s.deps.adapters).map(([name, adapter]) => [name, {
+    ...adapter, async run(i: RunInput) {
+      if (!i.readOnly) return adapter.run(i);
+      s.runs.push(i);
+      return review(i);
+    },
+  }])) as typeof s.deps.adapters };
+}
+
+test("cross review rejection uses targeted repair and re-review before escalating", async () => {
+  const s = setup(() => ({ ...good, text: "achado do autor" }));
+  const step = risky(s);
+  s.mk(2, [step.id]);
+  let reviews = 0;
+  const deps = withReviews(s, () => ({ ...good, text: JSON.stringify(++reviews === 1
+    ? { approved: false, findings: ["error TS2304: Cannot find name token"] }
+    : { approved: true, findings: ["reparo conferido"] }) }));
+  assert.deepEqual((await runPlan(deps, s.task.id)).done, [1, 2]);
+  const attempts = s.repo.listAttempts(step.id);
+  assert.deepEqual(attempts.map(a => [a.kind, a.tier, a.effort]), [
+    ["task", "mid", "medium"], ["review", "mid", "medium"],
+    ["repair", "cheap", "low"], ["review", "mid", "medium"],
+  ]);
+  assert.deepEqual(attempts.map(a => a.n), [1, 2, 3, 4]);
+  assert.ok(attempts.every(a => a.finished_at));
+  assert.equal(s.runs[2]!.cwd, s.runs[0]!.cwd);
+  assert.match(s.runs[2]!.prompt, /TS2304/);
+  assert.doesNotMatch(s.runs[2]!.prompt, /Corrija autorização/);
+  const context = JSON.parse(s.runs.at(-1)!.prompt.split("Contexto das dependências (JSON):\n")[1]!);
+  assert.equal(context.dependencies[0].review.approved, true);
+  assert.ok(context.dependencies[0].findings.includes("reparo conferido"));
+});
+
+test("failed targeted repair returns to the task ladder with review attempts outside the failure budget", async () => {
+  const s = setup();
+  const step = risky(s);
+  let reviews = 0;
+  const deps = withReviews(s, () => ({ ...good, text: JSON.stringify({ approved: ++reviews >= 3, findings: ["error TS2304: token"] }) }));
+  assert.deepEqual((await runPlan(deps, s.task.id)).done, [1]);
+  assert.deepEqual(s.repo.listAttempts(step.id).map(a => a.kind), ["task", "review", "repair", "review", "task", "review"]);
+  assert.match(s.runs[4]!.prompt, /Corrija autorização/);
+});
+
+for (const unavailable of ["disabled", "exhausted", "quota"] as const) {
+  test(`required reviewer ${unavailable} parks the step and blocks its dependents`, async () => {
+    const s = setup();
+    const step = risky(s);
+    s.mk(2, [step.id]);
+    if (unavailable === "exhausted") {
+      s.repo.upsertModel({ name: "sonnet-5-5", adapter: "claude-code", tier: "mid", preference: 0 });
+      s.repo.setAvailability("sonnet-5-5", { available: false, quota_state: "exhausted" });
+    }
+    const deps = withReviews(s, () => bad(true));
+    if (unavailable === "disabled") deps.cfg = { ...cfg, models: { ...cfg.models, "sonnet-5-5": { ...cfg.models["sonnet-5-5"]!, enabled: false } } };
+    assert.deepEqual(await runPlan(deps, s.task.id), { done: [], failed: [], blocked: [2], waiting_quota: [1] });
+    assert.ok(!s.deps.exec.calls.some(c => c.cmd === "gh"));
+    assert.ok(!s.started.includes("passo 2"));
+    assert.equal(s.runs.filter(r => r.readOnly).length, unavailable === "quota" ? 1 : 0);
+    assert.ok(s.repo.listAttempts(step.id).every(a => a.finished_at));
+  });
+}
+
+test("risk in the actual diff requires review even if the brief and declared files are trivial", async () => {
+  const s = setup();
+  s.mk(1);
+  let reviews = 0;
+  const deps = withReviews(s, () => { reviews++; return { ...good, text: '{"approved":true,"findings":[]}' }; });
+  const exec = fakeExec([
+    { when: c => c.args[0] === "diff", reply: ok("diff --git a/src/auth.ts b/src/auth.ts\n-old\n+new\n") },
+    { when: () => true, reply: c => s.deps.exec(c.cmd, c.args, c.opts) },
+  ]);
+  assert.deepEqual((await runPlan({ ...deps, exec }, s.task.id)).done, [1]);
+  assert.equal(reviews, 1);
+});
+
+test("malformed review never approves a risky change or unblocks a dependent", async () => {
+  const s = setup();
+  const step = risky(s);
+  s.mk(2, [step.id]);
+  const deps = withReviews(s, () => good);
+  const config = { ...cfg, escalation: { ...cfg.escalation, max_attempts: 1 } };
+  assert.deepEqual(await runPlan({ ...deps, cfg: config }, s.task.id), { done: [], failed: [1], blocked: [2], waiting_quota: [] });
+  assert.ok(!s.deps.exec.calls.some(c => c.cmd === "gh"));
+});
 
 test("independent steps run in parallel and the task ends done", async () => {
   const s = setup();

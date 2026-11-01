@@ -13,14 +13,20 @@ export type Task = Stamps & {
   request: string; phase: Phase | null; tier: Tier | null; status: TaskStatus; source_channel: string | null;
 };
 // depends_on guarda ids de passos do mesmo task
+export type StepHandoff = {
+  step_id: string; brief: string; diff: string; findings: string[]; model: string;
+  risk: string[];
+  review: { model: string; approved: boolean; findings: string[] } | null;
+};
 export type Step = Stamps & {
   task_id: string; seq: number; brief: string; tier: Tier; depends_on: string[]; files: string[];
   branch: string | null; pr_number: number | null; status: StepStatus;
   phase: Phase | null; effort: Effort | null; reason: string | null; role?: Role | null;
+  handoff: StepHandoff | null;
 };
 export type Attempt = Stamps & {
   step_id: string; n: number; adapter: string; model: string; tier: Tier; effort: Effort; runner: Runner;
-  kind: "task" | "repair"; reason: string | null;
+  kind: "task" | "repair" | "review"; reason: string | null;
   ci_result: string | null; failure_reason: string | null;
   input_tokens: number | null; output_tokens: number | null;
   cache_read_tokens: number | null; cache_write_tokens: number | null;
@@ -67,7 +73,8 @@ export function makeRepo(db: DatabaseSync, now: () => string = () => new Date().
     db.prepare(`SELECT * FROM ${table} WHERE id = ?`).get(id);
 
   const toStep = (r: Row): Step =>
-    ({ ...r, depends_on: JSON.parse(String(r.depends_on)), files: JSON.parse(String(r.files)) }) as unknown as Step;
+    ({ ...r, depends_on: JSON.parse(String(r.depends_on)), files: JSON.parse(String(r.files)),
+      handoff: r.handoff ? JSON.parse(String(r.handoff)) : null }) as unknown as Step;
   const toModel = (r: Row): ModelRow => ({ ...r, available: r.available === 1 }) as unknown as ModelRow;
   const toMessage = (r: Row): Message => ({ ...r, delivered: r.delivered === 1 }) as unknown as Message;
 
@@ -109,11 +116,12 @@ export function makeRepo(db: DatabaseSync, now: () => string = () => new Date().
       db.prepare("SELECT * FROM steps WHERE task_id = ? ORDER BY seq").all(taskId).map(toStep),
     listStepsByStatus: (status: StepStatus): Step[] =>
       db.prepare("SELECT * FROM steps WHERE status = ? ORDER BY created_at, seq").all(status).map(toStep),
-    updateStep: (id: string, patch: Partial<Pick<Step, "branch" | "pr_number" | "status">>) => update("steps", id, patch),
+    updateStep: (id: string, patch: Partial<Pick<Step, "branch" | "pr_number" | "status" | "handoff">>) =>
+      update("steps", id, { ...patch, ...("handoff" in patch ? { handoff: patch.handoff ? json(patch.handoff) : null } : {}) }),
 
     insertAttempt: (a: {
       step_id: string; n: number; adapter: string; model: string; tier: Tier; effort: Effort; runner: Runner;
-      kind?: "task" | "repair"; reason?: string | null;
+      kind?: "task" | "repair" | "review"; reason?: string | null;
     }): Attempt => insert("attempts", { ...a, started_at: now() }) as unknown as Attempt,
     finishAttempt: (
       id: string,
