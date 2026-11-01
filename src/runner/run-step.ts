@@ -8,6 +8,7 @@ import { estimateCost } from "../policy/cost.ts";
 import { stepFor } from "../policy/escalate.ts";
 import type { Lease } from "./lease.ts";
 import { selectModel } from "../policy/select.ts";
+import { selectForRole } from "../planner/selection.ts";
 import { repairFor } from "../policy/repair.ts";
 import type { Repo, Runner } from "../store/repo.ts";
 import { verifyAndMerge, type Verdict } from "../verify/ci.ts";
@@ -137,7 +138,10 @@ export async function runStep(d: StepDeps, stepId: string): Promise<StepOutcome>
         : choice.tier === "mid" ? "implementing" : choice.tier === "cheap" ? "simple_edit" : "integration";
       const states: Record<string, { available: boolean }> = { ...availability(repo) };
       if (!repair) for (const t of tried) states[t] = { available: false };
-      const name: string | null = retry ? (states[retry.name]?.available === false ? null : retry.name) : selectModel(cfg, choice.tier, states, phase);
+      const name: string | null = retry ? (states[retry.name]?.available === false ? null : retry.name)
+        : step.phase || step.role
+          ? selectForRole(cfg, repair ? phase ?? "implementing" : step.role ?? phase ?? "implementing", states, { tier: choice.tier, effort: choice.effort })?.model ?? null
+          : selectModel(cfg, choice.tier, states, phase);
       if (!name && repair) {
         pendingRepair = null;
         continue;

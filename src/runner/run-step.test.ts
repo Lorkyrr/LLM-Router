@@ -76,9 +76,20 @@ test("item phase and effort override the parent classification on the first rung
   s.repo.updateTask(s.step.task_id, { phase: "planning" });
   const item = s.repo.insertStep({ task_id: s.step.task_id, seq: 2, brief: "integre contratos", tier: "strong", phase: "integration", effort: "medium", depends_on: [], files: [] });
   assert.equal((await runStep(s.deps, item.id)).status, "done");
-  assert.equal(s.runs[0]?.model, "gpt-6-astra");
+  assert.equal(s.runs[0]?.model, "claude-opus-5-5");
   assert.equal(s.runs[0]?.effort, "medium");
   assert.equal(s.repo.listAttempts(item.id)[0]?.effort, "medium");
+});
+
+test("planned execution and fallback exclude enabled Grok even when it is cheaper", async () => {
+  const s = setup([bad("model failure"), good], ["green"], "strong");
+  s.deps.cfg = structuredClone(cfg);
+  s.deps.cfg.models.grok = { ...cfg.models["opus-5-5"]!, adapter: "grok-build", id: "grok", price: { input: 0, output: 0, cache_read: 0, cache_write: 0 } };
+  s.deps.cfg.tiers.strong.unshift("grok");
+  s.deps.cfg.phases.integration.prefer.unshift("grok");
+  const item = s.repo.insertStep({ task_id: s.step.task_id, seq: 2, brief: "investigue contratos", tier: "strong", role: "investigation", phase: "integration", effort: "high", depends_on: [], files: [] });
+  assert.equal((await runStep(s.deps, item.id)).status, "done");
+  assert.deepEqual(s.runs.map((run) => run.model), ["claude-opus-5-5", "gpt-6-astra"]);
 });
 
 test("red CI retries in a fresh run with the next model of the tier and the failure in the prompt", async () => {

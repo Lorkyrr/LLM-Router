@@ -5,6 +5,7 @@ import { ZERO_USAGE, type Adapter, type RunInput } from "../adapters/types.ts";
 import { openDb } from "../store/db.ts";
 import { makeRepo } from "../store/repo.ts";
 import { plan } from "./planner.ts";
+import { ROLES } from "./selection.ts";
 
 const cfg = loadConfig(new URL("../../config/router.yaml", import.meta.url).pathname);
 
@@ -124,4 +125,27 @@ test("planning a task that already has steps is refused", async () => {
   await plan(cfg, s.adapters, s.repo, s.task.id, { cwd: "/w" });
   await assert.rejects(() => plan(cfg, s.adapters, s.repo, s.task.id, { cwd: "/w" }), /already has steps/);
   assert.equal(s.repo.listSteps(s.task.id).length, 1);
+});
+
+test("each subtask role survives storage and receives its own model and effort", async () => {
+  const s = setup(steps(...ROLES.map((role) => ({ role, brief: role, depends_on: [], files: [] }))));
+  const out = await plan(cfg, s.adapters, s.repo, s.task.id, { cwd: "/w" });
+  assert.deepEqual(s.repo.listSteps(s.task.id).map((step) => step.role), [...ROLES]);
+  assert.deepEqual(out.map((step) => step.selection?.role), [...ROLES]);
+  assert.deepEqual(out.map((step) => [step.selection?.model, step.selection?.effort]), [
+    ["haiku-5-5", "low"], ["haiku-5-5", "low"], ["opus-5-5", "high"],
+    ["gpt-6.1-sol", "medium"], ["opus-5-5", "high"], ["opus-5-5", "high"],
+    ["gpt-6.1-sol", "medium"], ["opus-5-5", "high"], ["gpt-6.1-sol", "medium"],
+  ]);
+});
+
+test("unavailable subtask category waits without dropping to a cheaper incapable category", async () => {
+  const s = setup(steps({ role: "planning", brief: "contrato", depends_on: [], files: [] }));
+  for (const name of cfg.tiers.strong) {
+    s.repo.upsertModel({ name, adapter: cfg.models[name]!.adapter, tier: "strong", preference: 0 });
+    s.repo.setAvailability(name, { available: false });
+  }
+  const out = await plan(cfg, s.adapters, s.repo, s.task.id, { cwd: "/w" });
+  assert.equal(out[0]?.selection, null);
+  assert.equal(s.repo.getTask(s.task.id)?.status, "waiting_quota");
 });
