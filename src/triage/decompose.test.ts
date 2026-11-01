@@ -64,6 +64,30 @@ test("invalid dependency and malformed fallback never persist or escalate", asyn
   assert.ok(s.calls.every((c) => c.effort === "low" && c.model === "claude-haiku-5-5"));
 });
 
+test("planner rejects missing, malformed, self and future dependencies", async () => {
+  for (const depends_on of [undefined, null, "1", [0], [-1], [0.5], ["1"], [1], [2]]) {
+    const s = setup(JSON.stringify({ steps: [
+      { phase: "implementing", brief: "Implemente cache", depends_on, files: [] },
+    ] }));
+    await assert.rejects(() => decompose(cfg, s.adapters, "Cuide de A e também B", { cwd: "/w", repo: s.repo }), /invalid plan/);
+    assert.equal(s.calls.length, 2);
+  }
+});
+
+test("planner only returns dependencies on earlier items, including shared files", async () => {
+  const s = setup(JSON.stringify({ steps: [
+    { phase: "planning", brief: "Planeje a arquitetura", depends_on: [], files: [] },
+    { phase: "implementing", brief: "Implemente cache", depends_on: [1], files: ["src/cache.ts"] },
+    { phase: "integration", brief: "Integre cache", depends_on: [1, 1], files: ["src/cache.ts"] },
+  ] }));
+  const out = await decompose(cfg, s.adapters, "Cuide de A e também B", { cwd: "/w", repo: s.repo });
+  assert.ok(out);
+  assert.deepEqual(out.map((item) => item.depends_on), [[], [1], [1, 2]]);
+  for (const [index, item] of out.entries()) {
+    assert.ok(item.depends_on.every((dependency) => Number.isInteger(dependency) && dependency > 0 && dependency <= index));
+  }
+});
+
 test("inline numbering separates four tasks and shared files force ordering", async () => {
   const s = setup();
   const out = await decompose(cfg, s.adapters, "1) Renomeie o título em README.md 2) Planeje a arquitetura 3) Atualize o texto em README.md 4) Implemente testes de cache", { cwd: "/w", repo: s.repo });
