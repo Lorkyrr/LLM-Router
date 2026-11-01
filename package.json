@@ -7,8 +7,8 @@
     "node": ">=24"
   },
   "scripts": {
-    "test": "node --import tsx --test \"src/**/*.test.ts\" \"hooks/**/*.test.ts\" \"ci/**/*.test.ts\"",
-    "test:tap": "node --import tsx --test --test-reporter=tap \"src/**/*.test.ts\" \"hooks/**/*.test.ts\" \"ci/**/*.test.ts\"",
+    "test": "node --import tsx --test \"src/**/*.test.ts\" \"hooks/**/*.test.ts\" \"ci/**/*.test.ts\" \"scripts/**/*.test.ts\"",
+    "test:tap": "node --import tsx --test --test-reporter=tap \"src/**/*.test.ts\" \"hooks/**/*.test.ts\" \"ci/**/*.test.ts\" \"scripts/**/*.test.ts\"",
     "typecheck": "tsc --noEmit",
     "start": "node --import tsx src/main.ts"
   },
