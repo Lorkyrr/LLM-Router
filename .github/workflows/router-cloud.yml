@@ -17,7 +17,6 @@ jobs:
     runs-on: ubuntu-latest
     env:
       GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-      ROUTER_DB: ${{ runner.temp }}/router.db
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
@@ -29,6 +28,7 @@ jobs:
       - name: Run router
         env:
           TASK: ${{ inputs.task }}
+          ROUTER_DB: ${{ runner.temp }}/router.db
           ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
           XAI_API_KEY: ${{ secrets.XAI_API_KEY }}
         run: node --import tsx src/cli.ts run --task "$TASK"
