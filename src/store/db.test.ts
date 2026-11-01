@@ -47,3 +47,18 @@ test("every table has id, created_at and updated_at", () => {
     for (const c of ["id", "created_at", "updated_at"]) assert.ok(cols.includes(c), `${t}.${c}`);
   }
 });
+
+test("legacy steps gain a nullable private handoff without rewriting history", () => {
+  const db = openDb();
+  db.exec("ALTER TABLE steps DROP COLUMN handoff");
+  const repo = makeRepo(db);
+  const task = repo.insertTask({ request: "original" });
+  const step = repo.insertStep({ task_id: task.id, seq: 1, brief: "original", tier: "mid", depends_on: [], files: [] });
+  openDb(db);
+  openDb(db);
+  assert.equal(repo.getStep(step.id)!.handoff, null);
+  const handoff = { step_id: step.id, brief: "private brief", diff: "private diff", findings: ["private finding"], model: "sol", risk: [], review: null };
+  repo.updateStep(step.id, { handoff });
+  assert.deepEqual(repo.getStep(step.id)!.handoff, handoff);
+  assert.doesNotMatch(repo.exportHistory(), /private|handoff/);
+});

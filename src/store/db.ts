@@ -92,7 +92,7 @@ export function openDb(target: string | DatabaseSync = ":memory:"): DatabaseSync
     if (!columns.includes("kind")) db.exec("ALTER TABLE attempts ADD COLUMN kind TEXT NOT NULL DEFAULT 'task'");
     if (!columns.includes("reason")) db.exec("ALTER TABLE attempts ADD COLUMN reason TEXT");
     const stepColumns = new Set(db.prepare("PRAGMA table_info(steps)").all().map((r) => r.name));
-    for (const column of ["phase", "effort", "reason"]) {
+    for (const column of ["phase", "effort", "reason", "handoff"]) {
       if (!stepColumns.has(column)) db.exec(`ALTER TABLE steps ADD COLUMN ${column} TEXT`);
     }
     db.exec("COMMIT");

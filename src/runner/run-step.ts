@@ -1,6 +1,6 @@
 import { join } from "node:path";
 import type { Config, Step, Tier } from "../config.ts";
-import type { Adapter, AdapterName } from "../adapters/types.ts";
+import type { Adapter, AdapterName, RunResult } from "../adapters/types.ts";
 import { availability } from "../catalog/check.ts";
 import type { Exec } from "../exec.ts";
 import { backupBase, backupBranch, commitAll, deleteRemoteBranch, publishBranch, pushBranch, startBranch } from "../git/branch.ts";
@@ -9,7 +9,7 @@ import { stepFor } from "../policy/escalate.ts";
 import type { Lease } from "./lease.ts";
 import { selectModel } from "../policy/select.ts";
 import { repairFor } from "../policy/repair.ts";
-import type { Repo, Runner } from "../store/repo.ts";
+import type { Repo, Runner, StepHandoff } from "../store/repo.ts";
 import { verifyAndMerge, type Verdict } from "../verify/ci.ts";
 import { rebaseOnto, runLocalChecks, verifyLocal } from "../verify/local.ts";
 
@@ -40,7 +40,12 @@ const promptFor = (brief: string, lastFailure: string | null) =>
 
 type Repair = { original: Step; diagnostic: string; choice?: ReturnType<typeof repairFor> };
 
-export async function runStep(d: StepDeps, stepId: string): Promise<StepOutcome> {
+export type StepExecution = {
+  context: { dependencies: StepHandoff[] };
+  beforeVerify(input: { worktree: string; model: string; run: RunResult }): Promise<Verdict | { result: "waiting_quota" } | undefined>;
+};
+
+export async function runStep(d: StepDeps, stepId: string, execution?: StepExecution): Promise<StepOutcome> {
   const { cfg, repo } = d;
   const mode = cfg.verify.mode;
   const step = repo.getStep(stepId);
@@ -94,7 +99,7 @@ export async function runStep(d: StepDeps, stepId: string): Promise<StepOutcome>
     // `rung` = degrau da escada; `failures` = tentativas gastas (teto max_attempts). Falha não-quota tenta antes os
     // outros modelos do mesmo degrau (`tried`) e só então sobe o degrau.
     let rung = 1;
-    let failures = repo.listAttempts(stepId).filter(a => a.finished_at && a.failure_reason && a.failure_reason !== "quota exhausted").length;
+    let failures = repo.listAttempts(stepId).filter(a => a.kind !== "review" && a.finished_at && a.failure_reason && a.failure_reason !== "quota exhausted").length;
     const tried = new Set<string>();
     let prNumber = step.pr_number;
     let lastFailure: string | null = null;
@@ -144,14 +149,15 @@ export async function runStep(d: StepDeps, stepId: string): Promise<StepOutcome>
       if (!repair) repairs = 0;
       const effort = !repair && rung === 1 && step.effort ? step.effort : choice.effort;
       const attempt = repo.insertAttempt({
-        step_id: stepId, n: ++n, adapter: model.adapter, model: name, tier: choice.tier, effort, runner: d.runner,
+        step_id: stepId, n: n = repo.listAttempts(stepId).length + 1, adapter: model.adapter, model: name, tier: choice.tier, effort, runner: d.runner,
         kind: repair ? "repair" : "task", reason: repair?.choice?.reason ?? lastFailure ?? "initial task",
       });
       open = { id: attempt.id, usage: {} };
 
       const title = step.brief.split("\n")[0]!.slice(0, 72);
       const run = await d.adapters[model.adapter].run({
-        model: model.id, effort, prompt: repairPrompt ?? promptFor(step.brief, lastFailure), cwd: worktree,
+        model: model.id, effort, prompt: repairPrompt ?? promptFor(step.brief, lastFailure) +
+          (execution?.context.dependencies.length ? `\n\nContexto das dependências (JSON):\n${JSON.stringify(execution.context)}` : ""), cwd: worktree,
         timeoutMs: AGENT_TIMEOUT_MS,
       });
       const usage = {
@@ -186,18 +192,28 @@ export async function runStep(d: StepDeps, stepId: string): Promise<StepOutcome>
       }
 
       // local e staged commitam antes do gate; o modo pr deixa o commit para o publishBranch.
-      if (mode !== "pr" && !(await commitAll(d.exec, { worktree, title }))) {
+      if ((mode !== "pr" || execution) && !(await commitAll(d.exec, { worktree, title }))) {
         lastFailure = "agent made no changes";
         finish({ failure_reason: lastFailure });
         failures++;
         if (!repair) tried.add(name);
         continue;
       }
-      if (mode !== "pr") await backup(branch, worktree);
+      const reviewed = await execution?.beforeVerify({ worktree, model: name, run });
+      n = repo.listAttempts(stepId).length;
+      if (reviewed?.result === "waiting_quota") {
+        finish({ ci_result: "review_waiting_quota" });
+        repo.updateStep(stepId, { status: "waiting_quota" });
+        return { status: "waiting_quota", attempts: n };
+      }
+      if (mode !== "pr" && !reviewed) await backup(branch, worktree);
       const localOpts = { worktree, cmds: cfg.verify.local?.cmds ?? [], timeoutMs: (cfg.verify.local?.timeout_s ?? 0) * 1000 };
       let verdict: Verdict;
       let stage = "";
-      if (mode === "local") {
+      if (reviewed) {
+        verdict = reviewed;
+        stage = "review_";
+      } else if (mode === "local") {
         verdict = await verifyLocal(d.exec, { ...localOpts, repoDir: d.repoDir, branch, base: d.base, autoMerge: cfg.verify.auto_merge });
       } else {
         // Estágio 1 (staged): rebase no remoto e checks locais; nada vai ao GitHub antes de passar.
@@ -215,7 +231,7 @@ export async function runStep(d: StepDeps, stepId: string): Promise<StepOutcome>
         } else {
           // Modo pr: PR + CI do GitHub + merge agora. Staged: só abre o PR; CI e merge esperam o sinal (`release`).
           const pushOpts = { worktree, branch, base: d.base, title, body: step.brief, ...(prNumber ? { pr_number: prNumber } : {}) };
-          const pub = mode === "pr" ? await publishBranch(d.exec, pushOpts) : await pushBranch(d.exec, pushOpts);
+          const pub = mode === "pr" && !execution ? await publishBranch(d.exec, pushOpts) : await pushBranch(d.exec, pushOpts);
           if (!pub.changed) {
             lastFailure = "agent made no changes";
             finish({ failure_reason: lastFailure });
