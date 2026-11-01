@@ -101,6 +101,7 @@ O handshake real foi validado com o SDK MCP. Neste sandbox, `claude mcp get` fec
 ## Documentação
 
 - [Arquitetura e limites atuais](ARQUITETURA.md)
+- [Fluxo completo do roteamento e execução](docs/fluxo-completo.md)
 - [Preços e diretrizes](docs/model-policy.md)
 - [Cooperação entre agentes e próxima integração Grok-Bot](docs/agent-cooperation.md)
 - [Instruções para contribuidores e agentes](AGENTS.md)
