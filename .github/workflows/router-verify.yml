@@ -18,4 +18,5 @@ jobs:
       - name: CI
         env:
           BASE_REF: ${{ github.base_ref }}
+          CI_CLUSTER: ${{ vars.CI_CLUSTER }}
         run: ci/pr-ci.sh

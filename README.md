@@ -46,6 +46,14 @@ O sinal é a ferramenta MCP `release` (ou `gh workflow run router-release.yml`).
 - `verify.auto_merge: false` deixa o branch `router/step-*` e o worktree para revisão; o passo conta como `done`. Nos modos `pr` e `staged` o PR fica aberto após o CI verde, sem merge.
 - Os testes não rodam de novo após o rebase. Teste com git real e agente falso: `src/runner/run-step.local.test.ts`. Nenhum modelo real foi usado nesse fluxo.
 
+## Cluster kind no CI (só quando necessário)
+
+`ci/pr-ci.sh` (usado por `router-verify` e `router-release`) roda `ci/needs-cluster.sh` e só executa `ci/kind-up.sh` se o resultado for `kind`; o override `CI_CLUSTER` chega pela variável de repositório nos dois workflows; `ci/runner-down.sh` só derruba o cluster se ele existe. Os testes do próprio router rodam no host e não usam cluster.
+
+- **Override** (precedência): variável `CI_CLUSTER=auto|kind|off` (no GitHub, a variável de repositório `CI_CLUSTER`) > `verify.cluster` em `config/router.yaml` > `auto` (padrão). Valor inválido faz o passo falhar.
+- **`auto` sobe o cluster** se achar: `Chart.yaml` ou `kustomization.yaml|yml`; arquivo `PROJECT` de kubebuilder/operator-sdk; YAML com `apiVersion:` e `kind:` no topo (inclui CRDs); pastas `k8s/`, `deploy/`, `manifests/` ou `charts/` com YAML dentro; arquivos de teste (`*.test.*`, `*.spec.*`, `*_test.*`, `test_*`, `e2e/`, `tests/`) que citam `kubectl`, `KUBECONFIG`, `@kubernetes/client-node` ou `envtest` (menos os testes do próprio detector, `needs-cluster*`). Ignora `node_modules`, `.git`, `.worktrees` e `vendor`.
+- Limites: heurística por texto. Um YAML não-k8s com `apiVersion`+`kind` no topo causa falso positivo (use `off`); manifests gerados em tempo de build não são vistos (use `kind`). A saída explica o motivo: `ci/needs-cluster.sh [dir]`.
+
 ## Conexão ao Claude Code
 
 O servidor está registrado como `llm-router` em `~/.claude.json` com o comando Python e caminhos absolutos. Abra uma nova sessão do Claude Code e confira `/mcp`, ou execute `claude mcp get llm-router`. A conexão stdio é iniciada pelo cliente; não exige um daemon independente.

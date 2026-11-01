@@ -56,6 +56,8 @@ const schema = z
       // pr: push + CI do GitHub; local: gate local e merge no checkout; staged: gate local e depois PR + CI + merge.
       mode: z.enum(["pr", "local", "staged"]).default("pr"),
       local: z.object({ cmds: z.array(z.array(z.string()).min(1)).min(1), timeout_s: z.number().int().positive().default(1800) }).optional(),
+      // Sobe cluster kind no CI? auto = ci/needs-cluster.sh detecta; a variável CI_CLUSTER sobrepõe.
+      cluster: z.enum(["auto", "kind", "off"]).default("auto"),
       auto_merge: z.boolean(),
       delete_branch: z.boolean(),
     }),

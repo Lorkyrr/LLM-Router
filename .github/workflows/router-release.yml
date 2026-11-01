@@ -29,4 +29,5 @@ jobs:
       - name: Release router PRs
         env:
           BASE_REF: ${{ github.event.repository.default_branch }}
+          CI_CLUSTER: ${{ vars.CI_CLUSTER }}
         run: node --import tsx ci/release.ts --base "$BASE_REF" --prefix router/ -- ci/pr-ci.sh

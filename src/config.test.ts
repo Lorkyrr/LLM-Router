@@ -102,3 +102,10 @@ test("verify.mode defaults to pr and local requires a test command", () => {
   const staged = parseConfig({ ...base(), verify: { auto_merge: true, delete_branch: true, mode: "staged", local: { cmds: [["npm", "test"]] } } });
   assert.equal(staged.verify.local?.timeout_s, 1800);
 });
+
+test("verify.cluster defaults to auto and rejects unknown values", () => {
+  const verify = { auto_merge: true, delete_branch: true };
+  assert.equal(parseConfig(base()).verify.cluster, "auto");
+  assert.equal(parseConfig({ ...base(), verify: { ...verify, cluster: "off" } }).verify.cluster, "off");
+  assert.throws(() => parseConfig({ ...base(), verify: { ...verify, cluster: "yes" } }));
+});

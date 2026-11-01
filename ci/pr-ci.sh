@@ -10,8 +10,10 @@ TESTS=(node --import tsx --test --test-reporter=tap "src/**/*.test.ts" "hooks/**
 HERE="$(cd "$(dirname "$0")" && pwd)"
 
 npm ci
+# kind só sobe se o projeto precisa de Kubernetes (ci/needs-cluster.sh; override: CI_CLUSTER=auto|kind|off).
 # O cluster fica de pé entre PRs; ci/runner-down.sh o derruba quando não há mais CI em andamento.
-"$HERE/kind-up.sh"
+cluster="$("$HERE/needs-cluster.sh")" # valor inválido sai 2 e derruba o CI (set -e)
+if [ "$cluster" = kind ]; then "$HERE/kind-up.sh"; fi
 
 # Base estável: o último estado da branch alvo. Falha que já existia lá não bloqueia o PR.
 BASE_DIR="$TMP/base-$$"

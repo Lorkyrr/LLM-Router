@@ -75,6 +75,7 @@ agent-router/
   ci/
     router-verify.yml    # testes no kind e merge (runner self-hosted)
     router-cloud.yml     # mesmo fluxo via workflow_dispatch, pra quando o PC estiver desligado
+    needs-cluster.sh     # decide se o kind sobe (auto|kind|off); chamado por pr-ci.sh
     kind-up.sh / kind-down.sh
   config/router.yaml     # catálogo, fases, preferências, escalada, merge automático
 ```

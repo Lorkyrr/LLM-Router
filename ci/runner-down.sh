@@ -20,4 +20,8 @@ for f in "$BASE"/*/.repo; do
 done
 
 systemctl --user stop "router-runner@${SLUG}.service"
-kind delete cluster --name "${KIND_CLUSTER:-router-ci}" || true
+# Só derruba se o cluster existe (projetos sem Kubernetes nunca subiram um).
+CLUSTER="${KIND_CLUSTER:-router-ci}"
+if command -v kind >/dev/null && kind get clusters 2>/dev/null | grep -qx "$CLUSTER"; then
+  kind delete cluster --name "$CLUSTER" || true
+fi
