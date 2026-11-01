@@ -63,6 +63,19 @@ test("independent steps run in parallel and the task ends done", async () => {
   assert.equal(s.repo.getTask(s.task.id)!.status, "done");
 });
 
+test("parallelism is bounded and configurable without blocking dependency chains", async () => {
+  for (const limit of [1, 2, 3]) {
+    const s = setup();
+    const a = s.mk(1);
+    s.mk(2, [a.id]);
+    s.mk(3);
+    s.mk(4);
+    const cfg = { ...s.deps.cfg, verify: { ...s.deps.cfg.verify, max_parallel: limit } };
+    assert.deepEqual((await runPlan({ ...s.deps, cfg }, s.task.id)).done, [1, 2, 3, 4]);
+    assert.equal(s.maxActive(), limit);
+  }
+});
+
 test("run_plan backs up final history, including costs but excluding free text, without checking out a branch", async () => {
   const s = setup();
   s.mk(1);

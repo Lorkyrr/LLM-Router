@@ -53,6 +53,7 @@ const schema = z
       }),
     }),
     verify: z.object({
+      max_parallel: z.number().int().positive().default(2),
       // pr: push + CI do GitHub; local: gate local e merge no checkout; staged: gate local e depois PR + CI + merge.
       mode: z.enum(["pr", "local", "staged"]).default("pr"),
       local: z.object({ cmds: z.array(z.array(z.string()).min(1)).min(1), timeout_s: z.number().int().positive().default(1800) }).optional(),

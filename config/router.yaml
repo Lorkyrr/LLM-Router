@@ -92,7 +92,7 @@ escalation:
       - { tier: strong, effort: high }
       - { tier: strong, effort: xhigh }
 
-verify: { auto_merge: true, delete_branch: true }
+verify: { auto_merge: true, delete_branch: true, max_parallel: 2 }
 
 dispatch:
   cloud_tiers: [cheap, mid]

@@ -69,6 +69,16 @@ test("implementation steps from a Claude plan select Codex using the phase polic
   assert.equal(s.runs[0]!.model, "gpt-6.1-sol");
 });
 
+test("item phase and effort override the parent classification on the first rung", async () => {
+  const s = setup([good], ["green"]);
+  s.repo.updateTask(s.step.task_id, { phase: "planning" });
+  const item = s.repo.insertStep({ task_id: s.step.task_id, seq: 2, brief: "integre contratos", tier: "strong", phase: "integration", effort: "medium", depends_on: [], files: [] });
+  assert.equal((await runStep(s.deps, item.id)).status, "done");
+  assert.equal(s.runs[0]?.model, "gpt-6-astra");
+  assert.equal(s.runs[0]?.effort, "medium");
+  assert.equal(s.repo.listAttempts(item.id)[0]?.effort, "medium");
+});
+
 test("red CI retries in a fresh run with the next model of the tier and the failure in the prompt", async () => {
   const s = setup([good], ["red", "green"]);
   assert.deepEqual(await runStep(s.deps, s.step.id), { status: "done", attempts: 2 });

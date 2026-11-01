@@ -134,7 +134,7 @@ dispatch:
 
 ## Regras principais
 
-1. **Triagem:** toda requisição chega primeiro a um modelo barato em low, que só classifica a fase, desenha o fluxo, despacha e para.
+1. **Triagem:** mensagens com várias tarefas passam primeiro pela decomposição determinística; ambiguidades usam apenas cheap/low. Cada item recebe fase e roteamento próprios. Pedidos únicos continuam passando pela triagem barata.
 2. **Fase define a categoria:** planejamento, integração e revisão completa vão pra modelos fortes; implementação de features já desenhadas vai pra médios (ex.: Sonnet em medium ou high); edição simples vai pra baratos.
 3. **Preferência e fallback:** dentro da categoria vale a ordem configurada (ex.: Gemini Flash antes do Haiku); modelo indisponível ou sem cota passa pro próximo.
 4. **Teste de disponibilidade:** na inicialização e periodicamente, cada adaptador lista modelos e faz um ping mínimo pra confirmar acesso.
@@ -170,6 +170,16 @@ Ao finalizar `runPlan`, com o status da tarefa persistido, `runner/backup-state.
 O publicador consulta o ref remoto `refs/heads/router/state`, busca seu objeto sem escrever `FETCH_HEAD`, cria blob (`history.jsonl`), árvore e commit via plumbing Git e publica o SHA nesse ref. Não usa checkout, índice ou atualização de refs locais; o branch de trabalho e seus arquivos ficam intactos. Sem ref remoto, cria commit raiz; com ref existente, usa-o como pai e pula commits se a árvore não mudou. Publicações no processo são serializadas; corrida externa/rejeição de push não usa force e fica para o próximo `run_plan`. Comandos têm timeout de 60 s; falhas só avisam sem imprimir saída potencialmente sensível. `verify.push: never` desliga essa publicação em qualquer modo.
 
 O snapshot abrange todo o banco selecionado, portanto a separação por projeto depende de `ROUTER_DB`. Não há união de bancos entre máquinas: cada publicação representa o banco de origem, e commits anteriores preservam snapshots anteriores. A exportação permite consultar histórico e custos, mas não restaura prompts/briefs nem substitui um backup integral privado do SQLite. Operação e consulta: [README.md](README.md#backup-do-histórico).
+
+## Decomposição de tarefas (2026-11-01)
+
+`triage/decompose.ts` compartilha heurística e fallback cheap/low entre `route` e
+`planner`. O planner não usa strong para decompor; strong só executa itens cuja fase
+exige essa categoria. Os passos guardam fase/esforço/motivo, com migração SQLite
+aditiva; passos antigos preservam o comportamento anterior. A saída MCP inclui o
+modelo e o motivo de cada item. `runPlan` mantém o grafo de dependências e limita
+passos simultâneos com `verify.max_parallel` (padrão 2), sem ocupar vagas enquanto
+aguarda pré-requisitos. Detalhes e limites: [política de modelos](docs/model-policy.md#mensagens-com-várias-tarefas).
 
 ## Transporte MCP e executor
 

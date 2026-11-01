@@ -15,6 +15,7 @@ export type Task = Stamps & {
 export type Step = Stamps & {
   task_id: string; seq: number; brief: string; tier: Tier; depends_on: string[]; files: string[];
   branch: string | null; pr_number: number | null; status: StepStatus;
+  phase: Phase | null; effort: Effort | null; reason: string | null;
 };
 export type Attempt = Stamps & {
   step_id: string; n: number; adapter: string; model: string; tier: Tier; effort: Effort; runner: Runner;
@@ -96,6 +97,7 @@ export function makeRepo(db: DatabaseSync, now: () => string = () => new Date().
 
     insertStep: (s: {
       task_id: string; seq: number; brief: string; tier: Tier; depends_on: string[]; files: string[];
+      phase?: Phase; effort?: Effort; reason?: string;
     }): Step => toStep(insert("steps", { ...s, depends_on: json(s.depends_on), files: json(s.files), status: "pending" })),
     getStep: (id: string): Step | undefined => {
       const r = byId("steps", id);

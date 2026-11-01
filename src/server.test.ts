@@ -50,11 +50,29 @@ test("lists the seven tools", async () => {
 test("route returns the spec shape and stores the task", async () => {
   const { call, repo } = await connect(['{"phase":"simple_edit","tier":"cheap"}']);
   const { body } = await call("route", { request: "renomeia uma variável" });
-  assert.deepEqual({ ...body, task_id: undefined }, {
+  const { subtasks, ...summary } = body;
+  assert.equal(subtasks.length, 1);
+  assert.deepEqual({ ...summary, task_id: undefined }, {
     task_id: undefined, phase: "simple_edit", tier: "cheap", model: "haiku-5-5", adapter: "claude-code", effort: "low", next: "run",
     guidance: cfg.models["haiku-5-5"]!.guidance, pricing: cfg.models["haiku-5-5"]!.pricing,
   });
   assert.equal(repo.getTask(body.task_id)!.tier, "cheap");
+});
+
+test("route and plan expose independently routed Portuguese subtasks", async () => {
+  const { call, repo } = await connect(["must not call a model"]);
+  const request = "Renomeie o título em README.md e também planeje a arquitetura; enquanto isso, implemente testes de cache; depois, implemente a API";
+  const { body, error } = await call("route", { request });
+  assert.equal(error, false);
+  assert.equal(body.next, "run");
+  assert.deepEqual(body.subtasks.map((s: { model: string }) => s.model), ["haiku-5-5", "opus-5-5", "gpt-6.1-sol", "gpt-6.1-sol"]);
+  assert.deepEqual(body.subtasks.map((s: { depends_on: number[] }) => s.depends_on), [[], [], [], [1, 2, 3]]);
+  assert.ok(body.subtasks.every((s: { reason: string }) => s.reason.length));
+  assert.deepEqual(repo.listSteps(body.task_id).map((s) => s.phase), ["simple_edit", "planning", "implementing", "implementing"]);
+  const task = repo.insertTask({ request });
+  const planned = await call("plan", { task_id: task.id });
+  assert.equal(planned.error, false);
+  assert.deepEqual(planned.body.steps.map((s: { model: string }) => s.model), body.subtasks.map((s: { model: string }) => s.model));
 });
 
 test("route with override_tier skips triage and strong goes to plan", async () => {

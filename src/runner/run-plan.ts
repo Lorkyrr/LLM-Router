@@ -30,6 +30,17 @@ export async function runPlan(d: StepDeps, taskId: string): Promise<PlanOutcome>
   }
 
   const results = new Map<string, Promise<Result>>();
+  let active = 0;
+  const queue: Array<() => void> = [];
+  const acquire = async () => {
+    if (active < d.cfg.verify.max_parallel) active++;
+    else await new Promise<void>((resolve) => queue.push(resolve));
+  };
+  const release = () => {
+    const next = queue.shift();
+    if (next) next();
+    else active--;
+  };
   const start = (s: Step): Promise<Result> => {
     let p = results.get(s.id);
     if (!p) {
@@ -38,10 +49,15 @@ export async function runPlan(d: StepDeps, taskId: string): Promise<PlanOutcome>
         const deps = await Promise.all(s.depends_on.map((id) => start(byId.get(id) as Step)));
         if (deps.some((r) => r !== "done" && r !== "pr_open")) return "blocked";
         // runStep já converte exceções em `failed`; isto cobre o que escapa dele (ex.: banco), para um passo não derrubar os outros.
-        return await runStep(d, s.id).then((o) => o.status, (e) => {
-          console.error(`run-plan: step ${s.id}:`, e);
-          return "failed";
-        });
+        await acquire();
+        try {
+          return await runStep(d, s.id).then((o) => o.status, (e) => {
+            console.error(`run-plan: step ${s.id}:`, e);
+            return "failed";
+          });
+        } finally {
+          release();
+        }
       })();
       results.set(s.id, p);
     }

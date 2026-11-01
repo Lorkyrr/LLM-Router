@@ -102,7 +102,7 @@ export async function runStep(d: StepDeps, stepId: string): Promise<StepOutcome>
         repo.updateStep(stepId, { status: "failed" });
         return { status: "failed", attempts: n, reason: lastFailure ?? "no attempts left" };
       }
-      const taskPhase = repo.getTask(step.task_id)?.phase;
+      const taskPhase = step.phase ?? repo.getTask(step.task_id)?.phase;
       // Passos mid de um plano strong são implementação; escalada cheap→mid também.
       const phase = !taskPhase ? undefined : cfg.phases[taskPhase].tier === rungStep.tier ? taskPhase
         : rungStep.tier === "mid" ? "implementing" : rungStep.tier === "cheap" ? "simple_edit" : "integration";
@@ -119,14 +119,15 @@ export async function runStep(d: StepDeps, stepId: string): Promise<StepOutcome>
         return { status: "waiting_quota", attempts: n };
       }
       const model = cfg.models[name]!;
+      const effort = rung === 1 && step.effort ? step.effort : rungStep.effort;
       const attempt = repo.insertAttempt({
-        step_id: stepId, n: ++n, adapter: model.adapter, model: name, tier: rungStep.tier, effort: rungStep.effort, runner: d.runner,
+        step_id: stepId, n: ++n, adapter: model.adapter, model: name, tier: rungStep.tier, effort, runner: d.runner,
       });
       open = { id: attempt.id, usage: {} };
 
       const title = step.brief.split("\n")[0]!.slice(0, 72);
       const run = await d.adapters[model.adapter].run({
-        model: model.id, effort: rungStep.effort, prompt: promptFor(step.brief, lastFailure), cwd: worktree,
+        model: model.id, effort, prompt: promptFor(step.brief, lastFailure), cwd: worktree,
         timeoutMs: AGENT_TIMEOUT_MS,
       });
       const usage = {
