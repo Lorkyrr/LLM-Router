@@ -9,6 +9,7 @@ import { plan, storeItems } from "./planner/planner.ts";
 import { decompose } from "./triage/decompose.ts";
 import { strongBaseline } from "./policy/cost.ts";
 import { selectModel } from "./policy/select.ts";
+import { selectForStep } from "./planner/selection.ts";
 import { dispatchRelease, syncReleased } from "./runner/release.ts";
 import { runPlan } from "./runner/run-plan.ts";
 import type { Lease } from "./runner/lease.ts";
@@ -54,8 +55,9 @@ export function makeServer(ctx: Ctx): McpServer {
     const seqOf = new Map(steps.map((s) => [s.id, s.seq]));
     return steps.map((s) => {
       const phase = s.phase ?? (s.tier === "cheap" ? "simple_edit" : s.tier === "mid" ? "implementing" : "planning");
-      const model = selectModel(cfg, s.tier, availability(repo), phase);
-      return { seq: s.seq, brief: s.brief, phase, tier: s.tier, effort: s.effort ?? cfg.phases[phase].effort,
+      const selection = selectForStep(cfg, s, availability(repo));
+      const model = selection?.model ?? null;
+      return { seq: s.seq, brief: s.brief, phase, role: s.role ?? phase, tier: s.tier, effort: s.effort ?? cfg.phases[phase].effort,
         model, adapter: model ? cfg.models[model]!.adapter : null,
         reason: s.reason ?? `Fase ${phase}; preferência configurada na categoria ${s.tier}`,
         depends_on: s.depends_on.map((id) => seqOf.get(id)), files: s.files };

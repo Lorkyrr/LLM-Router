@@ -2,12 +2,13 @@ import { z } from "zod";
 import { PHASES, TIERS, type Config, type Phase } from "../config.ts";
 import type { Adapter, AdapterName } from "../adapters/types.ts";
 import { availability, markExhausted } from "../catalog/check.ts";
-import { selectModel } from "../policy/select.ts";
+import { ROLES, phaseForRole, selectForRole, type Role } from "../planner/selection.ts";
 import type { Repo } from "../store/repo.ts";
 import type { Triage } from "./triage.ts";
 
-export type Subtask = Triage & { brief: string; depends_on: number[]; files: string[]; reason: string };
+export type Subtask = Triage & { role?: Role; brief: string; depends_on: number[]; files: string[]; reason: string };
 const schema = z.object({ steps: z.array(z.object({
+  role: z.enum(ROLES).optional(),
   phase: z.enum(PHASES).optional(),
   tier: z.enum(TIERS).optional(),
   brief: z.string().trim().min(1),
@@ -43,16 +44,15 @@ export function fileDependencies(items: Subtask[]): Subtask[] {
 export async function planItems(cfg: Config, adapters: Record<AdapterName, Adapter>, request: string, opts: { cwd: string; repo: Repo }): Promise<Subtask[]> {
   for (let tries = 0; tries < 2;) {
     const states = availability(opts.repo);
-    const preferred = cfg.models[cfg.triage.model];
-    const name = preferred?.tier === "cheap" && preferred.enabled && states[cfg.triage.model]?.available !== false
-      ? cfg.triage.model : selectModel(cfg, "cheap", states);
+    const name = selectForRole(cfg, "triage", states)?.model;
     if (!name) throw new Error("planner: no cheap model available");
     const model = cfg.models[name]!;
     const r = await adapters[model.adapter].run({
       model: model.id, effort: "low", cwd: opts.cwd, readOnly: true, timeoutMs: 60_000,
       prompt: `Separe as tarefas delegadas sem executá-las. Responda SOMENTE JSON:
-{"steps":[{"phase":"simple_edit|implementing|planning|integration|full_review","brief":"objetivo autossuficiente e critério de pronto","depends_on":[],"files":[]}]}
+{"steps":[{"role":"${ROLES.join("|")}","brief":"objetivo autossuficiente e critério de pronto","depends_on":[],"files":[]}]}
 Cada item recebe sua própria fase; trivial/simple_edit, implementação/testes/implementing.
+Use review para revisão delimitada, investigation para causa raiz complexa, specialized para visão/interface/escrita.
 Só planejamento/arquitetura realmente complexos usam planning; integração complexa/integration; revisão completa/full_review.
 "e também" e "enquanto isso" sugerem independência; "depois" espera os itens anteriores.
 Referências explícitas ("conforme o plano", "após o item 1") e dependências de dados prevalecem sobre conectores aditivos.
@@ -66,10 +66,13 @@ Pedido: ${request}`,
     let raw: unknown;
     try { raw = JSON.parse(r.text.slice(r.text.indexOf("{"), r.text.lastIndexOf("}") + 1)); } catch { continue; }
     const parsed = schema.safeParse(raw);
-    if (!parsed.success || parsed.data.steps.some((s, i) => (!s.phase && !s.tier) || s.depends_on.some((d) => d > i))) continue;
+    if (!parsed.success || parsed.data.steps.some((s, i) => (!s.role && !s.phase && !s.tier) || s.depends_on.some((d) => d > i))) continue;
     return fileDependencies(parsed.data.steps.map((s) => {
-      const phase = s.phase ?? (s.tier === "cheap" ? "simple_edit" : s.tier === "mid" ? "implementing" : "planning");
-      return classified(cfg, s.brief, phase, s.depends_on, s.files, `Decomposição cheap/low; fase ${phase} conforme política configurada`);
+      const phase = s.role ? phaseForRole[s.role] : s.phase ?? (s.tier === "cheap" ? "simple_edit" : s.tier === "mid" ? "implementing" : "planning");
+      const role = s.role ?? phase;
+      const item = classified(cfg, s.brief, phase, s.depends_on, s.files, `Decomposição cheap/low; papel ${role}; menor preço de entrada+saída na categoria configurada`);
+      if (role === "triage") { item.tier = "cheap"; item.effort = "low"; }
+      return { ...item, role };
     }));
   }
   throw new Error("planner: invalid plan after 2 tries");

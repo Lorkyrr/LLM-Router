@@ -36,9 +36,11 @@ sem cheap disponível, `plan` fica em `waiting_quota`. Respostas inválidas têm
 tentativas; dependências próprias, futuras ou não positivas são rejeitadas antes de
 gravar passos. O planner também usa cheap/low para pedidos únicos que exigem divisão.
 
-Cada item usa `phases.<fase>.tier`, `effort` e `prefer`, com fallback da mesma categoria.
-As preferências e a ordem dos tiers representam a política de custo/adequação;
-não há nova ordenação por preço. Edição trivial fica em cheap/low, implementação e
+Cada item usa `phases.<fase>.tier` e `effort`, com fallback da mesma categoria.
+O seletor de papéis do planner compara entrada + saída por 1M tokens entre modelos
+habilitados e disponíveis dessa categoria; `prefer` e a ordem dos tiers desempatam.
+Essa referência assume volumes iguais de entrada e saída, sem cache; não prevê
+consumo real nem comprova qualidade. Edição trivial fica em cheap/low, implementação e
 testes em mid/medium; só itens classificados como planejamento, integração ou revisão
 complexos recebem strong. Um `override_tier` explícito continua prevalecendo por item.
 
@@ -58,6 +60,32 @@ posição da escada, inclusive no fallback de modelo; depois mantém a escalada 
 Passos antigos com esses campos nulos continuam usando a política legada da tarefa.
 A migração SQLite adiciona colunas sem apagar histórico.
 
+### Papéis no planner
+
+`src/planner/selection.ts` representa os papéis executáveis da tabela de
+`agent-cooperation.md`: `triage`, `simple_edit`, `planning`, `implementing`,
+`investigation`, `integration`, `review`, `full_review` e `specialized`.
+Investigação usa a política de integração; revisão delimitada e especialização usam
+a de implementação. Triagem permanece cheap/low. Revisão completa mantém strong;
+revisão delimitada usa mid/medium na configuração atual. `selectForRole` aceita o
+adaptador do autor para exigir revisão cruzada, sem criar um ciclo automático.
+
+O papel retornado pela decomposição é validado e persistido em `steps.role`, por
+migração aditiva; respostas antigas com fase/tier continuam aceitas. `plan` retorna
+`selection` por passo com papel, adaptador, chave do modelo, ID, tier e esforço.
+O MCP descreve as escolhas usando o mesmo seletor do runner. Sem candidato válido,
+o plano fica `waiting_quota`. As escolhas são reavaliadas na execução e nos fallbacks,
+mantendo a categoria e a escada de esforço; disponibilidade pode mudar após o plano.
+
+Somente IDs Claude via `claude-code` e GPT via `codex` são elegíveis nesse fluxo;
+Grok é excluído mesmo se cadastrado como habilitado. Grok-Bot é transporte, não um
+papel de execução. Terra continua desativado; especialização usa candidatos mid
+habilitados e ainda exige avaliação de capacidade com tarefas representativas.
+Com os preços atuais, Opus é o strong mais barato e vence Astra inclusive em
+integração e revisão completa. Empates mantêm Haiku para trivial e Sol para
+implementação. Seleção legada de pedidos únicos fora do planner mantém `selectModel`
+e suas preferências, sem ordenação por preço.
+
 `verify.max_parallel` é inteiro positivo, padrão **2**, e limita passos simultâneos
 por chamada de `run_plan`. Dependências aguardam fora das vagas; falhas liberam vagas
 e bloqueiam somente os dependentes. Ciclos/ids inválidos continuam bloqueados. Cada
@@ -65,7 +93,7 @@ passo usa seu worktree; o limite não coordena outras chamadas/processos. A heur
 não é um parser geral de linguagem natural: modelos baratos ainda podem errar a
 interpretação, e arquivos omitidos não permitem detectar conflitos antecipadamente.
 
-`phases.<fase>.prefer` define a preferência específica; `tiers` continua como fallback. As referências precisam pertencer à categoria da fase. Modelos indisponíveis ou `enabled: false` são pulados; modelos desativados não são pingados. Não há ordenação automática por preço.
+No seletor legado, `phases.<fase>.prefer` define a preferência específica; `tiers` continua como fallback. As referências precisam pertencer à categoria da fase. Modelos indisponíveis ou `enabled: false` são pulados; modelos desativados não são pingados. Nesse seletor não há ordenação automática por preço; o planner aplica a comparação descrita acima.
 
 | Fase | Preferência | Alternativa | Responsabilidade |
 |---|---|---|---|

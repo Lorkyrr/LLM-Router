@@ -64,7 +64,7 @@ for (const [diagnostic, tier, effort] of [["integration: deadlock", "strong", "m
     const s = setup([diagnostic]);
     const item = s.repo.insertStep({ task_id: s.step.task_id, seq: 2, brief: "integre contratos", tier: "strong", phase: "integration", effort: "medium", depends_on: [], files: [] });
     assert.deepEqual(await runStep(s.deps, item.id), { status: "done", attempts: 2 });
-    assert.equal(s.runs[0]!.model, "gpt-6-astra");
+    assert.equal(s.runs[0]!.model, "claude-opus-5-5");
     assert.deepEqual(s.repo.listAttempts(item.id).map(a => [a.kind, a.tier, a.effort]), [["task", "strong", "medium"], ["repair", tier, effort]]);
     assert.equal(s.runs[1]!.effort, effort);
   });
