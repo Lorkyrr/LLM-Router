@@ -42,6 +42,7 @@ for kind in claude codex gemini copilot cursor-agent opencode goose qwen; do
   command -v "$kind" >/dev/null 2>&1 || continue
   found=1
   python3 "$HELPER" apply --kind "$kind" "${DRYFLAG[@]}" python3 "$ROOT/bin/router-mcp.py"
+  python3 "$HELPER" guide-apply --kind "$kind" "${DRYFLAG[@]}"
 done
 if command -v grok >/dev/null 2>&1; then
   found=1

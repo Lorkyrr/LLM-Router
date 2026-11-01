@@ -16,6 +16,7 @@ command -v python3 >/dev/null 2>&1 || { echo "falta python3" >&2; exit 1; }
 
 for kind in $(python3 "$HELPER" kinds); do
   python3 "$HELPER" revert --kind "$kind" "${DRYFLAG[@]}"
+  python3 "$HELPER" guide-revert --kind "$kind" "${DRYFLAG[@]}"
 done
 
 # node_modules só é removido se o instalador o criou.

@@ -29,7 +29,7 @@ def load_manifest():
 
 
 def save_manifest(m):
-    if m["entries"] or m.get("npm_ci"):
+    if m["entries"] or m.get("npm_ci") or m.get("extras"):
         STATE.parent.mkdir(parents=True, exist_ok=True)
         STATE.write_text(json.dumps(m, indent=2) + "\n")
     elif STATE.exists():
@@ -181,9 +181,116 @@ def revert(kind, dry):
     save_manifest(m)
 
 
+# ---- instruções globais + hooks por prompt ----
+MD_BEGIN, MD_END = "<!-- >>> llm-router (managed) >>> -->", "<!-- <<< llm-router (managed) <<< -->"
+GUIDE_FILES = {
+    "claude": ".claude/CLAUDE.md", "codex": ".codex/AGENTS.md", "gemini": ".gemini/GEMINI.md",
+    "qwen": ".qwen/QWEN.md", "opencode": ".config/opencode/AGENTS.md",
+    "copilot": ".copilot/copilot-instructions.md", "goose": ".config/goose/.goosehints",
+}
+HOOK_FILES = {"claude": ".claude/settings.json", "codex": ".codex/hooks.json"}
+GUIDE_TEXT = (
+    "## llm-router\n\n"
+    "Oriente SEMPRE o trabalho de desenvolvimento pelo router MCP `llm-router`: use `route` para "
+    "classificar o pedido, `plan` para planejar e `run_plan` para executar, em vez de agir direto. "
+    "Se ROUTER_DEPTH >= 1 você foi iniciado pelo router: não o chame de novo.\n"
+)
+HOOK_MARK = "router-reminder.py"
+
+
+def md_re():
+    return re.compile(rf"^{re.escape(MD_BEGIN)}\n.*?^{re.escape(MD_END)}\n", re.S | re.M)
+
+
+def has_hook(lst):
+    return any(HOOK_MARK in h.get("command", "") for g in lst for h in g.get("hooks", []))
+
+
+def guide_apply(kind, dry, root):
+    jobs = []
+    if kind in GUIDE_FILES:
+        jobs.append(("guide", HOME / GUIDE_FILES[kind]))
+    if kind in HOOK_FILES:
+        jobs.append(("hook", HOME / HOOK_FILES[kind]))
+    m = load_manifest()
+    for what, path in jobs:
+        existed = path.exists()
+        text = path.read_text() if existed else ""
+        if what == "guide":
+            block = f"{MD_BEGIN}\n{GUIDE_TEXT}{MD_END}\n"
+            found = md_re().search(text)
+            if found:
+                if found.group(0) == block:
+                    print(f"{pre(dry)}{kind}: instruções já presentes em {path}")
+                    continue
+                new = md_re().sub(lambda _: block, text, count=1)
+            else:
+                sep = "" if (not text or text.endswith("\n")) else "\n"
+                new = text + sep + ("\n" if text else "") + block
+        else:
+            data = json.loads(text or "{}") if existed else {}
+            lst = data.setdefault("hooks", {}).setdefault("UserPromptSubmit", [])
+            if has_hook(lst):
+                print(f"{pre(dry)}{kind}: hook já presente em {path}")
+                continue
+            cmd = f"python3 {root}/hooks/{HOOK_MARK}"
+            lst.append({"hooks": [{"type": "command", "command": cmd, "timeout": 5}]})
+            new = json.dumps(data, indent=2) + "\n"
+        bak = None if dry else backup(path)
+        print(f"{pre(dry)}{kind}: gravar {what} em {path}" + (f" (backup {bak})" if bak else ""))
+        if not dry:
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text(new)
+            extras = m.setdefault("extras", {})
+            extras.setdefault(f"{kind}:{what}", {"file": str(path), "backup": bak, "created": not existed})
+            save_manifest(m)
+
+
+def guide_revert(kind, dry):
+    m = load_manifest()
+    for what in ("guide", "hook"):
+        key = f"{kind}:{what}"
+        info = m.get("extras", {}).get(key)
+        if not info:
+            continue
+        path = Path(info["file"])
+        print(f"{pre(dry)}{kind}: remover {what} de {path}")
+        if dry:
+            continue
+        if path.exists():
+            text = path.read_text()
+            if what == "guide":
+                out = md_re().sub("", text, count=1)
+                if out.endswith("\n\n") and out.strip():
+                    out = out[:-1]
+                empty = not out.strip()
+            else:
+                data = json.loads(text or "{}")
+                hk = data.get("hooks", {})
+                lst = [g for g in hk.get("UserPromptSubmit", [])
+                       if not any(HOOK_MARK in h.get("command", "") for h in g.get("hooks", []))]
+                if lst:
+                    hk["UserPromptSubmit"] = lst
+                else:
+                    hk.pop("UserPromptSubmit", None)
+                if not hk:
+                    data.pop("hooks", None)
+                empty = not data
+                out = json.dumps(data, indent=2) + "\n"
+            if info["created"] and empty:
+                path.unlink()
+            else:
+                path.write_text(out)
+        del m["extras"][key]
+        if not m["extras"]:
+            del m["extras"]
+        save_manifest(m)
+
+
 def main():
     p = argparse.ArgumentParser()
-    p.add_argument("op", choices=["apply", "revert", "kinds", "manifest-get", "manifest-set", "manifest-del"])
+    p.add_argument("op", choices=["apply", "revert", "kinds", "manifest-get", "manifest-set", "manifest-del",
+                                  "guide-apply", "guide-revert"])
     p.add_argument("--kind")
     p.add_argument("--dry-run", action="store_true")
     p.add_argument("--key")
@@ -192,6 +299,10 @@ def main():
     a = p.parse_args()
     if a.op == "apply":
         apply(a.kind, a.cmd[0], a.cmd[1:], a.dry_run)
+    elif a.op == "guide-apply":
+        guide_apply(a.kind, a.dry_run, Path(__file__).resolve().parent.parent.parent)
+    elif a.op == "guide-revert":
+        guide_revert(a.kind, a.dry_run)
     elif a.op == "revert":
         revert(a.kind, a.dry_run)
     elif a.op == "kinds":

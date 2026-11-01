@@ -10,6 +10,12 @@ export type Exec = (cmd: string, args: string[], opts?: ExecOptions) => Promise<
 const MISSING_BINARY = 127;
 const KILLED = 124;
 
+// Processos iniciados pelo router recebem ROUTER_DEPTH+1; os hooks saem se ROUTER_DEPTH>=1.
+export function childEnv(base: NodeJS.ProcessEnv = process.env): NodeJS.ProcessEnv {
+  const depth = Number.parseInt(base.ROUTER_DEPTH ?? "0", 10);
+  return { ...base, ROUTER_DEPTH: String((Number.isFinite(depth) && depth > 0 ? depth : 0) + 1) };
+}
+
 export const realExec: Exec = async (cmd, args, opts = {}) => {
   // Node cria socketpairs para stdio "pipe". Em sandboxes que bloqueiam a
   // identificação desses sockets, os filhos Node descartam stdout/stderr.
@@ -26,7 +32,7 @@ export const realExec: Exec = async (cmd, args, opts = {}) => {
     fds.push(openSync(output, "w", 0o600));
     fds.push(openSync(error, "w", 0o600));
     return await new Promise<ExecResult>((resolve) => {
-      const child = spawn(cmd, args, { cwd: opts.cwd, stdio: [fds[0]!, fds[1]!, fds[2]!] });
+      const child = spawn(cmd, args, { cwd: opts.cwd, stdio: [fds[0]!, fds[1]!, fds[2]!], env: childEnv() });
       let spawnError: NodeJS.ErrnoException | undefined;
       let timedOut = false;
       const timer = opts.timeoutMs ? setTimeout(() => {
