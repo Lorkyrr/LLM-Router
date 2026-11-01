@@ -30,7 +30,7 @@ def main():
 
     log("start")
     child = subprocess.Popen(
-        [args.node, "--import", str(root / "node_modules/tsx/dist/loader.mjs"), str(root / "src/main.ts")],
+        [args.node, "--import", str(root / "bin/register-tsx.mjs"), str(root / "src/main.ts")],
         stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
         start_new_session=os.name == "posix",
     )

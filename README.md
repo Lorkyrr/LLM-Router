@@ -1,8 +1,8 @@
 # LLM-Router
 
-Router MCP por **stdio**, em TypeScript, que faz triagem (`triage`), planeja (`plan`) e roteia tarefas de programação para Claude Code e Codex CLI, escolhendo modelo, categoria (`tier`: `cheap`, `mid`, `strong`) e esforço por fase. Executa passos em worktrees Git e registra estado, tentativas e uso em SQLite.
+Router MCP por **stdio**, em TypeScript, que faz triagem (`triage`), planejamento (`plan`) e roteia tarefas de programação para Claude Code e Codex CLI, escolhendo modelo, categoria (`tier`: `cheap`, `mid`, `strong`) e esforço por fase. Executa passos em worktrees Git e registra estado, tentativas e uso em SQLite.
 
-Para o uso pretendido por enquanto, com Claude Code e Codex, **mantenha Grok desativado**. O catálogo versionado, porém, ainda mantém `grok-fast` e `grok-reasoning` habilitados, e o adaptador `grok-build` continua registrado. Para operar sem Grok, defina `enabled: false` nesses dois modelos no catálogo usado pelo servidor. O transporte do Grok Bot ainda não foi configurado.
+O uso pretendido por enquanto é com Claude Code e Codex, **com Grok desativado**. Isso exige definir `enabled: false` em `models.grok-fast` e `models.grok-reasoning` no catálogo usado pelo servidor: o [YAML versionado](config/router.yaml) ainda os habilita por padrão. O adaptador `grok-build` continua registrado, e o transporte do Grok Bot ainda não foi configurado.
 
 Os trabalhadores abrem sessões novas, com modelo e esforço explícitos, sem alterar o modelo da conversa que chamou o MCP. As preferências atuais são Opus para planejamento, Sol para implementação e Astra para integração/revisão, com alternativas da mesma categoria. São hipóteses de configuração, ainda sem benchmark comparativo local. Terra permanece desativado.
 
@@ -18,7 +18,9 @@ npm test
 npm run typecheck
 ```
 
-O cliente MCP inicia o servidor sob demanda; não é necessário um daemon. Use [bin/router-mcp.py](bin/router-mcp.py): ele encaminha pipes reais para Node e carrega o `tsx` por caminho absoluto, inclusive fora da instalação. `ROUTER_NODE` ou `--node` seleciona o executável Node quando necessário.
+O cliente MCP inicia o servidor sob demanda; não é necessário um daemon. Use [bin/router-mcp.py](bin/router-mcp.py): ele encaminha pipes reais para Node e resolve o `tsx` a partir da instalação, inclusive quando as dependências estão em um `node_modules` ancestral do worktree. O launcher funciona fora da pasta da instalação e preserva o diretório de trabalho do projeto. `ROUTER_NODE` ou `--node` seleciona o executável Node quando necessário.
+
+`npm start` também inicia o servidor por stdio e, sem `ROUTER_CHECK_MODELS=manual`, faz verificações com modelos reais. Para validar a instalação sem consumir cota, use os testes acima.
 
 ### Registro no Claude Code
 
@@ -87,6 +89,7 @@ Os custos misturam dados devolvidos pelos CLIs e estimativas do catálogo. Não 
 | `ROUTER_LOCAL_TEST` | Atalho para comandos locais, por exemplo `npm run typecheck && npm test`. |
 | `ROUTER_VERIFY_MODE` | Com o atalho `ROUTER_LOCAL_TEST`, escolhe `local` (padrão do atalho) ou `staged`. Para `pr`, use o YAML. |
 | `ROUTER_RUNNER` | Instância do runner; por padrão derivada como `owner-repo` do remoto `origin`. |
+| `ROUTER_NODE` | Executável Node usado pelo launcher Python; padrão: `node` encontrado no `PATH`. |
 
 `ROUTER_LOCAL_TEST` é separado por `&&` e espaços, sem interpretação completa de shell. Para definir argumentos diretamente, use listas em `verify.local.cmds`:
 
@@ -124,17 +127,23 @@ O CI de verificação e release usa runner **self-hosted** com labels `[self-hos
 
 O router liga o runner sob demanda durante a verificação/release. [ci/pr-ci.sh](ci/pr-ci.sh) instala dependências, sobe ou reaproveita o cluster kind `router-ci`, compara falhas de testes com a base estável e executa o typecheck. Ao terminar, [ci/runner-down.sh](ci/runner-down.sh) desliga o runner e remove o cluster quando não há CI em execução ou na fila dos repositórios registrados. `KIND_CLUSTER` permite mudar o nome do cluster.
 
-O fluxo `staged` dos PRs `router/*` exige liberação manual, via `release({})` ou:
+### Release manual e gatilhos dos workflows
+
+O fluxo `staged` dos PRs `router/*` exige liberação manual. `release({})` liga o runner e dispara o workflow. Para dispará-lo diretamente com `gh`, garanta que o runner esteja ligado (via `ci/runner-up.sh owner-repo`) e execute no repositório alvo:
 
 ```bash
 gh workflow run router-release.yml
 ```
 
-Os workflows existentes têm estes gatilhos:
+Os gatilhos versionados são:
 
-- [router-release.yml](.github/workflows/router-release.yml): somente manual (`workflow_dispatch`), no runner self-hosted.
-- [router-cloud.yml](.github/workflows/router-cloud.yml): somente manual (`workflow_dispatch`), em runner hospedado; **é um esqueleto incompleto**, sem execução ponta a ponta comprovada.
-- [router-verify.yml](.github/workflows/router-verify.yml): automático em `pull_request`, mas ignora branches `router/*`, que aguardam release. Portanto, os workflows do repositório **ainda não são todos manuais**.
+| Workflow | Gatilho | Execução |
+| --- | --- | --- |
+| [router-release.yml](.github/workflows/router-release.yml) | Somente manual (`workflow_dispatch`) | Runner self-hosted; compara, testa e mergeia PRs `router/*`. |
+| [router-cloud.yml](.github/workflows/router-cloud.yml) | Somente manual (`workflow_dispatch`) | Runner hospedado; **esqueleto incompleto**, sem execução ponta a ponta comprovada. |
+| [router-verify.yml](.github/workflows/router-verify.yml) | Automático (`pull_request`), com job que ignora branches `router/*` | Runner self-hosted; verifica os demais PRs. |
+
+Portanto, o release dos PRs do router é manual, mas os workflows do repositório **ainda não são todos manuais**.
 
 O modo `pr` depende de checks efetivamente disparados no repositório alvo; neste repositório, `router-verify` ignora os PRs do router. Para gate local seguido de liberação manual, use `staged`.
 
@@ -148,7 +157,9 @@ O modo `pr` depende de checks efetivamente disparados no repositório alvo; nest
 - [Integração de subprocessos e stdio](docs/exec-integration-plan.md).
 - [Instruções para contribuidores e agentes](AGENTS.md).
 
-Os testes usam subprocessos simulados e Git real em repositórios temporários, sem chamar modelos pagos. O handshake MCP por processo real foi validado; o relatório existente não comprova um ciclo completo de implementação/revisão com modelos reais. O modo nuvem ainda depende de integração do banco, instalação dos CLIs e acionamento da verificação. Importadores de sessão e adaptadores Zed/Antigravity permanecem fora da implementação atual.
+Os testes usam subprocessos simulados e Git real em repositórios temporários, sem chamar modelos pagos. O teste de handshake MCP usa processos reais e cobre inicialização, listagem de ferramentas e `status`, fora da pasta da instalação, com stdin bloqueante ou não bloqueante e dependências locais ou em um ancestral. Isso não comprova conexão pelo cliente Claude Code nem um ciclo completo de implementação/revisão com modelos reais; veja os resultados e limites em [docs/e2e-smoke.md](docs/e2e-smoke.md).
+
+O modo nuvem ainda depende de integração do banco, instalação dos CLIs e acionamento da verificação. Importadores de sessão e adaptadores Zed/Antigravity permanecem fora da implementação atual.
 
 ## Roadmap — planejado
 

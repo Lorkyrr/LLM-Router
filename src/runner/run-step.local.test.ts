@@ -1,6 +1,5 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { execFileSync } from "node:child_process";
 import { existsSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -12,18 +11,22 @@ import { makeRepo } from "../store/repo.ts";
 import { runStep } from "./run-step.ts";
 
 // Git real em repositório temporário e agente falso: prova a mecânica local sem modelos pagos nem GitHub.
-const git = (cwd: string, ...a: string[]) => execFileSync("git", a, { cwd, encoding: "utf8" }).trim();
+const git = async (cwd: string, ...args: string[]) => {
+  const result = await realExec("git", args, { cwd });
+  assert.equal(result.code, 0, result.stderr || result.stdout);
+  return result.stdout.trim();
+};
 const cfg0 = loadConfig(new URL("../../config/router.yaml", import.meta.url).pathname);
 const usage = { input_tokens: 1, output_tokens: 1, cache_read_tokens: 0, cache_write_tokens: 0 };
 
 test("local mode end to end with real git: agent edit is tested, rebased and fast-forwarded into main", async () => {
   const dir = mkdtempSync(join(tmpdir(), "router-local-"));
-  git(dir, "init", "-b", "main");
-  git(dir, "config", "user.email", "t@t");
-  git(dir, "config", "user.name", "t");
+  await git(dir, "init", "-b", "main");
+  await git(dir, "config", "user.email", "t@t");
+  await git(dir, "config", "user.name", "t");
   writeFileSync(join(dir, "a.txt"), "a\n");
-  git(dir, "add", "-A");
-  git(dir, "commit", "-m", "init");
+  await git(dir, "add", "-A");
+  await git(dir, "commit", "-m", "init");
 
   const repo = makeRepo(openDb());
   const task = repo.insertTask({ request: "r" });
@@ -45,7 +48,7 @@ test("local mode end to end with real git: agent edit is tested, rebased and fas
 
   assert.deepEqual(out, { status: "done", attempts: 1 });
   assert.equal(readFileSync(join(dir, "b.txt"), "utf8"), "b\n");
-  assert.equal(git(dir, "log", "-1", "--format=%s"), "crie b.txt");
-  assert.equal(git(dir, "branch", "--list", "router/*"), "");
+  assert.equal(await git(dir, "log", "-1", "--format=%s"), "crie b.txt");
+  assert.equal(await git(dir, "branch", "--list", "router/*"), "");
   assert.ok(!existsSync(join(dir, ".worktrees", "router-step-" + step.id.slice(0, 8))));
 });

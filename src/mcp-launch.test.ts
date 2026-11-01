@@ -1,24 +1,32 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { cpSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { spawn } from "node:child_process";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js";
 
-for (const nonblocking of [false, true]) test(`MCP handshake with nonblocking stdin=${nonblocking}`, { timeout: 15_000 }, async () => {
+for (const layout of ["installation", "ancestor"] as const) for (const nonblocking of [false, true]) test(`MCP handshake with ${layout} dependencies, nonblocking stdin=${nonblocking}`, { timeout: 15_000 }, async () => {
   const dir = mkdtempSync(join(tmpdir(), "router-mcp-test-"));
+  const root = fileURLToPath(new URL("../", import.meta.url));
+  const install = join(dir, "install");
+  for (const path of ["bin", "src", "config"]) cpSync(join(root, path), join(install, path), { recursive: true });
+  cpSync(join(root, "package.json"), join(install, "package.json"));
+  // Cobre instalação comum e worktree sem node_modules próprio.
+  symlinkSync(dirname(dirname(fileURLToPath(import.meta.resolve("tsx/package.json")))), join(layout === "ancestor" ? dir : install, "node_modules"), "dir");
+  const launcher = join(install, "bin/router-mcp.py");
   const transport = new StdioClientTransport({
     command: "python3",
-    args: nonblocking ? ["-c", `import os,runpy,sys;os.set_blocking(0,False);sys.argv=[${JSON.stringify(fileURLToPath(new URL("../bin/router-mcp.py", import.meta.url)))},'--node',${JSON.stringify(process.execPath)}];runpy.run_path(sys.argv[0],run_name='__main__')`]
-      : [fileURLToPath(new URL("../bin/router-mcp.py", import.meta.url)), "--node", process.execPath],
-    env: { ...Object.fromEntries(Object.entries(process.env).filter((entry): entry is [string, string] => entry[1] !== undefined)),
-      ROUTER_DB: join(dir, "router.db"), ROUTER_CHECK_MODELS: "manual" },
+    args: nonblocking ? ["-c", `import os,runpy,sys;os.set_blocking(0,False);sys.argv=[${JSON.stringify(launcher)},'--node',${JSON.stringify(process.execPath)}];runpy.run_path(sys.argv[0],run_name='__main__')`]
+      : [launcher, "--node", process.execPath],
+    env: { ROUTER_DB: join(dir, "router.db"), ROUTER_CHECK_MODELS: "manual" },
     cwd: dir, // Import tsx must work outside the installation directory.
     stderr: "pipe",
   });
+  let stderr = "";
+  transport.stderr?.on("data", (chunk: Buffer) => { stderr += chunk.toString(); });
   const client = new Client({ name: "router-launch-test", version: "1" });
   try {
     await client.connect(transport);
@@ -27,6 +35,8 @@ for (const nonblocking of [false, true]) test(`MCP handshake with nonblocking st
     assert.ok(names.includes("run_plan"));
     const status = await client.callTool({ name: "status", arguments: {} });
     assert.equal(status.isError, undefined);
+  } catch (cause) {
+    throw new Error(`MCP handshake failed; server stderr:\n${stderr}`, { cause });
   } finally {
     await client.close();
     rmSync(dir, { recursive: true, force: true });

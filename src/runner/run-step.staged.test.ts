@@ -1,6 +1,5 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { execFileSync } from "node:child_process";
 import { existsSync, mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -15,7 +14,11 @@ import { runStep } from "./run-step.ts";
 
 // Git real com remoto bare; só o `gh` é falso (o merge dele é um push para main). Prova push-só-depois-do-gate, PR sem CI/merge
 // até o sinal, e o release (ci/release.ts) mergeando e apagando o branch.
-const git = (cwd: string, ...a: string[]) => execFileSync("git", a, { cwd, encoding: "utf8" }).trim();
+const git = async (cwd: string, ...args: string[]) => {
+  const result = await realExec("git", args, { cwd });
+  assert.equal(result.code, 0, result.stderr || result.stdout);
+  return result.stdout.trim();
+};
 const cfg0 = loadConfig(new URL("../../config/router.yaml", import.meta.url).pathname);
 const usage = { input_tokens: 1, output_tokens: 1, cache_read_tokens: 0, cache_write_tokens: 0 };
 
@@ -23,14 +26,14 @@ test("staged end to end: failing gate pushes nothing, passing gate opens the PR,
   const root = mkdtempSync(join(tmpdir(), "router-staged-"));
   const remote = join(root, "remote.git");
   const dir = join(root, "work");
-  git(root, "init", "--bare", "-b", "main", remote);
-  git(root, "clone", remote, dir);
-  git(dir, "config", "user.email", "t@t");
-  git(dir, "config", "user.name", "t");
+  await git(root, "init", "--bare", "-b", "main", remote);
+  await git(root, "clone", remote, dir);
+  await git(dir, "config", "user.email", "t@t");
+  await git(dir, "config", "user.name", "t");
   writeFileSync(join(dir, "a.txt"), "a\n");
-  git(dir, "add", "-A");
-  git(dir, "commit", "-m", "init");
-  git(dir, "push", "origin", "HEAD:main");
+  await git(dir, "add", "-A");
+  await git(dir, "commit", "-m", "init");
+  await git(dir, "push", "origin", "HEAD:main");
 
   const repo = makeRepo(openDb());
   const task = repo.insertTask({ request: "r" });
@@ -73,15 +76,15 @@ test("staged end to end: failing gate pushes nothing, passing gate opens the PR,
   assert.deepEqual(pushes, ["2"]); // um só push, depois da 2ª rodada do agente
   assert.ok(ghCalls.includes("pr create") && !ghCalls.includes("pr merge") && !ghCalls.includes("pr checks"));
   const branch = repo.getStep(step.id)!.branch!;
-  assert.match(git(dir, "ls-remote", "--heads", "origin", branch), /refs\/heads\/router/);
-  assert.throws(() => git(dir, "cat-file", "-e", "origin/main:b.txt"));
+  assert.match(await git(dir, "ls-remote", "--heads", "origin", branch), /refs\/heads\/router/);
+  await assert.rejects(() => git(dir, "cat-file", "-e", "origin/main:b.txt"));
 
   // Sinal: compara os PRs, roda o CI de cada um, mergeia e apaga o branch remoto.
   const outcome = await release(exec, { cwd: dir, base: "main", prefix: "router/", ciCmd: ["test", "-f", "b.txt"], tmpDir: root });
   assert.deepEqual(outcome.merged, [9]);
-  git(dir, "fetch", "origin", "main");
-  assert.equal(git(dir, "show", "origin/main:b.txt"), "b");
-  assert.equal(git(dir, "ls-remote", "--heads", "origin", branch), "");
+  await git(dir, "fetch", "origin", "main");
+  assert.equal(await git(dir, "show", "origin/main:b.txt"), "b");
+  assert.equal(await git(dir, "ls-remote", "--heads", "origin", branch), "");
 
   // O estado local acompanha o GitHub: passo done, worktree e branch locais removidos.
   assert.deepEqual(await syncReleased(deps), { merged: [9], closed: [], open: [] });
