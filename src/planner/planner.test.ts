@@ -26,7 +26,7 @@ function setup(...texts: string[]) {
 }
 const steps = (...s: object[]) => JSON.stringify({ steps: s });
 
-test("plans with the strong model and stores steps with ids as dependencies", async () => {
+test("decomposes with cheap low and stores steps with ids as dependencies", async () => {
   const s = setup(
     steps(
       { tier: "mid", brief: "a", depends_on: [], files: ["src/a.ts"] },
@@ -34,8 +34,8 @@ test("plans with the strong model and stores steps with ids as dependencies", as
     ),
   );
   const out = await plan(cfg, s.adapters, s.repo, s.task.id, { cwd: "/w" });
-  assert.equal(s.calls[0]!.model, "claude-opus-5-5");
-  assert.equal(s.calls[0]!.effort, "high");
+  assert.equal(s.calls[0]!.model, "claude-haiku-5-5");
+  assert.equal(s.calls[0]!.effort, "low");
   assert.deepEqual(out.map((x) => x.seq), [1, 2]);
   assert.deepEqual(out[1]!.depends_on, [out[0]!.id]);
   assert.equal(s.repo.listSteps(s.task.id).length, 2);
@@ -74,10 +74,10 @@ test("invalid JSON is retried once", async () => {
   assert.equal(s.calls.length, 2);
 });
 
-test("no strong model available marks the task waiting_quota", async () => {
+test("no cheap model available marks the task waiting_quota", async () => {
   const s = setup("x");
-  for (const name of cfg.tiers.strong) {
-    s.repo.upsertModel({ name, adapter: "claude-code", tier: "strong", preference: 0 });
+  for (const name of cfg.tiers.cheap) {
+    s.repo.upsertModel({ name, adapter: "claude-code", tier: "cheap", preference: 0 });
     s.repo.setAvailability(name, { available: false, quota_state: "exhausted" });
   }
   const out = await plan(cfg, s.adapters, s.repo, s.task.id, { cwd: "/w" });
@@ -92,7 +92,7 @@ function quotaThenOk(okText: string) {
   const adapter: Adapter = {
     async run(i) {
       models.push(i.model);
-      if (i.model === "claude-opus-5-5") return { ok: false, text: "", usage: ZERO_USAGE, cost_usd: null, quota_exhausted: true, error: "quota" };
+      if (i.model === "claude-haiku-5-5") return { ok: false, text: "", usage: ZERO_USAGE, cost_usd: null, quota_exhausted: true, error: "quota" };
       return { ok: true, text: okText, usage: ZERO_USAGE, cost_usd: null, quota_exhausted: false };
     },
     async ping() {
@@ -103,15 +103,15 @@ function quotaThenOk(okText: string) {
   return { repo, models, task, adapters: { "claude-code": adapter, "grok-build": adapter, codex: adapter } };
 }
 
-test("quota exhaustion falls back to the next strong model and marks the first unavailable", async () => {
+test("quota exhaustion falls back within cheap and marks the first unavailable", async () => {
   const s = quotaThenOk(steps({ tier: "mid", brief: "a", depends_on: [], files: [] }));
   const out = await plan(cfg, s.adapters, s.repo, s.task.id, { cwd: "/w" });
-  assert.deepEqual(s.models, ["claude-opus-5-5", "gpt-6-astra"]);
+  assert.deepEqual(s.models, ["claude-haiku-5-5", "gpt-6-luna"]);
   assert.equal(out.length, 1);
-  assert.equal(s.repo.listModels().find((m) => m.name === "opus-5-5")?.available, false);
+  assert.equal(s.repo.listModels().find((m) => m.name === "haiku-5-5")?.available, false);
 });
 
-test("quota exhausted on every strong model leaves the task waiting_quota", async () => {
+test("quota exhausted on every cheap model leaves the task waiting_quota", async () => {
   const s = quotaThenOk("x");
   const exhausted: Adapter = { run: async () => ({ ok: false, text: "", usage: ZERO_USAGE, cost_usd: null, quota_exhausted: true }), ping: async () => ({ available: false, quota_state: "exhausted" }) };
   const out = await plan(cfg, { "claude-code": exhausted, "grok-build": exhausted, codex: exhausted }, s.repo, s.task.id, { cwd: "/w" });

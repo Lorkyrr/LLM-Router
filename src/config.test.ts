@@ -45,6 +45,14 @@ test("repair defaults and thresholds are validated, including regex syntax", () 
   }
 });
 
+test("max_parallel defaults to two and accepts only positive integers", () => {
+  assert.equal(parseConfig(base()).verify.max_parallel, 2);
+  for (const max_parallel of [0, -1, 1.5]) {
+    assert.throws(() => parseConfig({ ...base(), verify: { ...base().verify, max_parallel } }));
+  }
+  assert.equal(parseConfig({ ...base(), verify: { ...base().verify, max_parallel: 3 } }).verify.max_parallel, 3);
+});
+
 test("accepts a Codex model with auditable pricing and routing guidance", () => {
   const c = base();
   const raw = { ...c, models: { ...c.models, sol: {

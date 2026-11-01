@@ -59,6 +59,17 @@ test("complex gate failure repairs with the same tier and effort", async () => {
   assert.match(s.repo.listAttempts(s.step.id)[1]!.reason!, /complex/);
 });
 
+for (const [diagnostic, tier, effort] of [["integration: deadlock", "strong", "medium"], ["SyntaxError: unexpected token", "cheap", "low"]] as const) {
+  test(`per-item routing preserves ${tier} repair policy and explicit effort`, async () => {
+    const s = setup([diagnostic]);
+    const item = s.repo.insertStep({ task_id: s.step.task_id, seq: 2, brief: "integre contratos", tier: "strong", phase: "integration", effort: "medium", depends_on: [], files: [] });
+    assert.deepEqual(await runStep(s.deps, item.id), { status: "done", attempts: 2 });
+    assert.equal(s.runs[0]!.model, "gpt-6-astra");
+    assert.deepEqual(s.repo.listAttempts(item.id).map(a => [a.kind, a.tier, a.effort]), [["task", "strong", "medium"], ["repair", tier, effort]]);
+    assert.equal(s.runs[1]!.effort, effort);
+  });
+}
+
 test("failed repair returns to the original tier ladder and brief", async () => {
   const s = setup(["SyntaxError: unexpected token", "SyntaxError: unexpected token"]);
   await runStep(s.deps, s.step.id);

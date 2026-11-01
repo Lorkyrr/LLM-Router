@@ -91,6 +91,10 @@ export function openDb(target: string | DatabaseSync = ":memory:"): DatabaseSync
     const columns = db.prepare("PRAGMA table_info(attempts)").all().map((r) => r.name);
     if (!columns.includes("kind")) db.exec("ALTER TABLE attempts ADD COLUMN kind TEXT NOT NULL DEFAULT 'task'");
     if (!columns.includes("reason")) db.exec("ALTER TABLE attempts ADD COLUMN reason TEXT");
+    const stepColumns = new Set(db.prepare("PRAGMA table_info(steps)").all().map((r) => r.name));
+    for (const column of ["phase", "effort", "reason"]) {
+      if (!stepColumns.has(column)) db.exec(`ALTER TABLE steps ADD COLUMN ${column} TEXT`);
+    }
     db.exec("COMMIT");
   } catch (e) {
     db.exec("ROLLBACK");

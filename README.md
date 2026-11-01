@@ -25,12 +25,19 @@ Conecte `npm start` pelo cliente MCP via stdio. A inicialização faz pings pago
 
 ## Uso por MCP
 
-1. `route({request})` retorna categoria/modelo/esforço; modelos com metadados também retornam diretriz e origem do preço.
+1. `route({request})` retorna categoria/modelo/esforço para pedidos únicos e `subtasks` com modelo/motivo/dependências para cada item; modelos com metadados também retornam diretriz e origem do preço.
 2. Se `next` for `plan`, chame `plan({task_id})`.
 3. `run_plan({task_id})` inicia passos. O fluxo publica PRs e tenta merge após CI; execute apenas em repositórios autorizados.
 4. `status({task_id})` acompanha resultados e custo registrado/estimado.
 
 `check_models` testa disponibilidade; `relay` usa fallback Claude enquanto o bot não estiver configurado. `phases.<fase>.prefer` divide responsabilidades: Opus planeja, Sol implementa e Astra integra/revisa, com fallback entre agentes da mesma categoria. Para triagem Codex, use `triage.model: gpt-6-luna`. Detalhes e ressalvas estão na política de modelos.
+
+Mensagens com várias tarefas usam heurística primeiro e fallback apenas cheap/low.
+`route` já grava os passos reconhecidos e retorna `next: run`; cada item recebe sua
+fase e esforço, sem promover o pedido inteiro para strong. `depois` aguarda itens
+anteriores; `e também`/`enquanto isso` permitem independência. `verify.max_parallel`
+limita passos simultâneos por plano (padrão 2). Exemplos, saída e limites estão na
+[política de decomposição](docs/model-policy.md#mensagens-com-várias-tarefas).
 
 ## Modo local (sem GitHub nem CI)
 

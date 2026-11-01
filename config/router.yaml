@@ -101,7 +101,7 @@ repair:
     max_diff_lines: 100
     patterns: ['error TS\d+', 'SyntaxError', 'Cannot find module', 'Module not found', 'Cannot find name', '\blint\b', 'Parsing error']
 
-verify: { auto_merge: true, delete_branch: true }
+verify: { auto_merge: true, delete_branch: true, max_parallel: 2 }
 
 dispatch:
   cloud_tiers: [cheap, mid]

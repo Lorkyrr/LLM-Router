@@ -2,6 +2,7 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { openDb } from "./db.ts";
 import { DatabaseSync } from "node:sqlite";
+import { makeRepo } from "./repo.ts";
 
 test("openDb creates the five tables", () => {
   const db = openDb();
@@ -23,6 +24,20 @@ test("openDb migrates old attempts without losing history and is repeatable", ()
   assert.equal(old.kind, "task");
   assert.equal(old.reason, null);
   assert.equal(old.step_id, "step");
+});
+
+test("upgrades legacy steps without losing data and persists per-item routing", () => {
+  const db = openDb();
+  for (const column of ["phase", "effort", "reason"]) db.exec(`ALTER TABLE steps DROP COLUMN ${column}`);
+  const repo = makeRepo(db);
+  const task = repo.insertTask({ request: "original" });
+  const old = repo.insertStep({ task_id: task.id, seq: 1, brief: "original", tier: "mid", depends_on: [], files: [] });
+  openDb(db);
+  assert.equal(repo.getStep(old.id)?.brief, "original");
+  assert.equal(repo.getStep(old.id)?.phase, null);
+  const item = repo.insertStep({ task_id: task.id, seq: 2, brief: "revise", tier: "strong", phase: "integration", effort: "medium", reason: "contratos", depends_on: [old.id], files: [] });
+  openDb(db);
+  assert.deepEqual([repo.getStep(item.id)?.phase, repo.getStep(item.id)?.effort, repo.getStep(item.id)?.reason], ["integration", "medium", "contratos"]);
 });
 
 test("every table has id, created_at and updated_at", () => {

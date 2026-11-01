@@ -107,7 +107,7 @@ export async function runStep(d: StepDeps, stepId: string): Promise<StepOutcome>
         repo.updateStep(stepId, { status: "failed" });
         return { status: "failed", attempts: n, reason: lastFailure ?? "no attempts left" };
       }
-      const taskPhase = repo.getTask(step.task_id)?.phase;
+      const taskPhase = step.phase ?? repo.getTask(step.task_id)?.phase;
       const repair: Repair | null = pendingRepair;
       let repairPrompt: string | undefined;
       if (repair) {
@@ -142,15 +142,16 @@ export async function runStep(d: StepDeps, stepId: string): Promise<StepOutcome>
       }
       const model = cfg.models[name]!;
       if (!repair) repairs = 0;
+      const effort = !repair && rung === 1 && step.effort ? step.effort : choice.effort;
       const attempt = repo.insertAttempt({
-        step_id: stepId, n: ++n, adapter: model.adapter, model: name, tier: choice.tier, effort: choice.effort, runner: d.runner,
+        step_id: stepId, n: ++n, adapter: model.adapter, model: name, tier: choice.tier, effort, runner: d.runner,
         kind: repair ? "repair" : "task", reason: repair?.choice?.reason ?? lastFailure ?? "initial task",
       });
       open = { id: attempt.id, usage: {} };
 
       const title = step.brief.split("\n")[0]!.slice(0, 72);
       const run = await d.adapters[model.adapter].run({
-        model: model.id, effort: choice.effort, prompt: repairPrompt ?? promptFor(step.brief, lastFailure), cwd: worktree,
+        model: model.id, effort, prompt: repairPrompt ?? promptFor(step.brief, lastFailure), cwd: worktree,
         timeoutMs: AGENT_TIMEOUT_MS,
       });
       const usage = {
@@ -261,7 +262,7 @@ export async function runStep(d: StepDeps, stepId: string): Promise<StepOutcome>
       failures++;
       if (!repair) tried.add(name);
       if (verdict.result === "failed" && verdict.gate && cfg.repair.enabled && repairs < cfg.repair.max && failures < cfg.escalation.max_attempts) {
-        const original: Step = repair?.original ?? rungStep;
+        const original: Step = repair?.original ?? { tier: choice.tier, effort };
         pendingRepair = { original, diagnostic: verdict.reason };
       }
     }

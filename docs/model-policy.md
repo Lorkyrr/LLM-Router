@@ -20,6 +20,51 @@ Claude: [preços](https://platform.claude.com/docs/en/about-claude/pricing), [Ha
 
 ## Seleção e esforço
 
+### Mensagens com várias tarefas
+
+`route` tenta decompor listas numeradas, marcadores, linhas e conectores em português
+antes da triagem da mensagem inteira. `e também`, `e` seguido de um comando e
+`enquanto isso` separam itens independentes; `depois`/`em seguida` criam uma barreira
+que aguarda todos os itens anteriores. Arquivos explicitamente compartilhados também
+criam dependências. A numeração, sozinha, não torna a lista sequencial.
+
+A heurística reconhece comandos e fases conservadoramente. Contexto comum, código
+em blocos, referências como “essa arquitetura” e comandos desconhecidos usam um
+modelo disponível da categoria **cheap**, sempre em **low**, read-only. A preferência
+de triage só é usada se também for cheap. Não existe fallback strong para decompor:
+sem cheap disponível, `plan` fica em `waiting_quota`. Respostas inválidas têm duas
+tentativas; dependências próprias, futuras ou não positivas são rejeitadas antes de
+gravar passos. O planner também usa cheap/low para pedidos únicos que exigem divisão.
+
+Cada item usa `phases.<fase>.tier`, `effort` e `prefer`, com fallback da mesma categoria.
+As preferências e a ordem dos tiers representam a política de custo/adequação;
+não há nova ordenação por preço. Edição trivial fica em cheap/low, implementação e
+testes em mid/medium; só itens classificados como planejamento, integração ou revisão
+complexos recebem strong. Um `override_tier` explícito continua prevalecendo por item.
+
+Exemplo: “Renomeie o título em README.md e também planeje a arquitetura; enquanto
+isso, implemente testes de cache; depois, implemente a API” produz quatro itens:
+Haiku low, Opus high, Sol medium e Sol medium. Os três primeiros são independentes;
+o quarto aguarda os três. Grok permanece desativado.
+
+`route.subtasks` e `plan.steps` expõem brief, fase, tier, effort, modelo, motivo,
+arquivos e dependências por número. Para mensagens decompostas, `route` já grava os
+passos e retorna `next: run` (ou `wait` se algum modelo estiver indisponível); não
+chame `plan` novamente sobre esses passos. Pedidos únicos preservam o resumo legado
+e incluem `subtasks`; strong único ainda retorna `next: plan`.
+
+O runner grava fase/esforço/motivo em cada passo e aplica fase e esforço na primeira
+posição da escada, inclusive no fallback de modelo; depois mantém a escalada existente.
+Passos antigos com esses campos nulos continuam usando a política legada da tarefa.
+A migração SQLite adiciona colunas sem apagar histórico.
+
+`verify.max_parallel` é inteiro positivo, padrão **2**, e limita passos simultâneos
+por chamada de `run_plan`. Dependências aguardam fora das vagas; falhas liberam vagas
+e bloqueiam somente os dependentes. Ciclos/ids inválidos continuam bloqueados. Cada
+passo usa seu worktree; o limite não coordena outras chamadas/processos. A heurística
+não é um parser geral de linguagem natural: modelos baratos ainda podem errar a
+interpretação, e arquivos omitidos não permitem detectar conflitos antecipadamente.
+
 `phases.<fase>.prefer` define a preferência específica; `tiers` continua como fallback. As referências precisam pertencer à categoria da fase. Modelos indisponíveis ou `enabled: false` são pulados; modelos desativados não são pingados. Não há ordenação automática por preço.
 
 | Fase | Preferência | Alternativa | Responsabilidade |

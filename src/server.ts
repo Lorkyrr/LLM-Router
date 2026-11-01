@@ -5,7 +5,8 @@ import { availability, checkModels } from "./catalog/check.ts";
 import { relay, type Transport } from "./channel/relay.ts";
 import { TIERS, type Config } from "./config.ts";
 import type { Exec } from "./exec.ts";
-import { plan } from "./planner/planner.ts";
+import { plan, storeItems } from "./planner/planner.ts";
+import { decompose } from "./triage/decompose.ts";
 import { strongBaseline } from "./policy/cost.ts";
 import { selectModel } from "./policy/select.ts";
 import { dispatchRelease, syncReleased } from "./runner/release.ts";
@@ -49,22 +50,47 @@ export function makeServer(ctx: Ctx): McpServer {
     if (!t) throw new Error(`unknown task ${id}`);
     return t;
   };
+  const describeSteps = (steps: ReturnType<Repo["listSteps"]>) => {
+    const seqOf = new Map(steps.map((s) => [s.id, s.seq]));
+    return steps.map((s) => {
+      const phase = s.phase ?? (s.tier === "cheap" ? "simple_edit" : s.tier === "mid" ? "implementing" : "planning");
+      const model = selectModel(cfg, s.tier, availability(repo), phase);
+      return { seq: s.seq, brief: s.brief, phase, tier: s.tier, effort: s.effort ?? cfg.phases[phase].effort,
+        model, adapter: model ? cfg.models[model]!.adapter : null,
+        reason: s.reason ?? `Fase ${phase}; preferência configurada na categoria ${s.tier}`,
+        depends_on: s.depends_on.map((id) => seqOf.get(id)), files: s.files };
+    });
+  };
 
   server.registerTool(
     "route",
     { description: "Classify a request and pick tier, model and effort.", inputSchema: { request: z.string().min(1), override_tier: z.enum(TIERS).nullish() } },
     tool(async ({ request, override_tier }) => {
+      const items = await decompose(cfg, ctx.adapters, request, { cwd: ctx.repoDir, repo });
+      if (items) {
+        if (override_tier) for (const item of items) {
+          item.tier = override_tier;
+          item.effort = cfg.escalation.ladder[override_tier][0]!.effort;
+          item.reason += `; categoria sobrescrita pelo usuário: ${override_tier}`;
+        }
+        const task = repo.insertTask({ request });
+        const subtasks = describeSteps(storeItems(repo, task.id, items));
+        const waiting = subtasks.some((s) => !s.model);
+        if (waiting) repo.updateTask(task.id, { status: "waiting_quota" });
+        return { task_id: task.id, subtasks, next: waiting ? "wait" : "run" };
+      }
       const t = await triage(cfg, ctx.adapters, request, { cwd: ctx.repoDir, repo, overrideTier: override_tier ?? undefined });
       const task = repo.insertTask({ request, phase: t.phase, tier: t.tier });
       const name = selectModel(cfg, t.tier, availability(repo), t.phase);
       if (!name) repo.updateTask(task.id, { status: "waiting_quota" });
       // cheap/mid não passam pelo planner: este passo único é o que run_plan executa.
-      else if (t.tier !== "strong") repo.insertStep({ task_id: task.id, seq: 1, brief: request, tier: t.tier, depends_on: [], files: [] });
+      else if (t.tier !== "strong") repo.insertStep({ task_id: task.id, seq: 1, brief: request, tier: t.tier, phase: t.phase, effort: t.effort, depends_on: [], files: [] });
       const model = name ? cfg.models[name] : undefined;
       return {
         task_id: task.id, phase: t.phase, tier: t.tier, model: name, adapter: model?.adapter ?? null, effort: t.effort,
         ...(model?.guidance ? { guidance: model.guidance } : {}),
         ...(model?.pricing ? { pricing: model.pricing } : {}),
+        subtasks: [{ seq: 1, brief: request, ...t, model: name, reason: `Fase ${t.phase}; preferência configurada na categoria ${t.tier}`, depends_on: [], files: [] }],
         next: !name ? "wait" : t.tier === "strong" ? "plan" : "run",
       };
     }),
@@ -72,13 +98,12 @@ export function makeServer(ctx: Ctx): McpServer {
 
   server.registerTool(
     "plan",
-    { description: "Split a task into steps with the strong model.", inputSchema: { task_id: z.string() } },
+    { description: "Decompose with heuristics or cheap/low and route each step independently.", inputSchema: { task_id: z.string() } },
     tool(async ({ task_id }) => {
       mustTask(task_id);
       const steps = await plan(cfg, ctx.adapters, repo, task_id, { cwd: ctx.repoDir });
-      const seqOf = new Map(steps.map((s) => [s.id, s.seq]));
       return {
-        steps: steps.map((s) => ({ seq: s.seq, tier: s.tier, brief: s.brief, depends_on: s.depends_on.map((d) => seqOf.get(d)), files: s.files })),
+        steps: describeSteps(steps),
       };
     }),
   );
