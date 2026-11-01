@@ -48,7 +48,7 @@ function executionFor(d: StepDeps, step: Step): StepExecution {
 
       // Revisor: o par preferido (outro fornecedor) primeiro; sem cota, outro fornecedor do tier mid e, por fim, outro modelo mid.
       // Sem candidato o passo fica em awaiting_review (branch e commit gravados, sem merge nem PR).
-      const provider = d.cfg.models[author]!.adapter;
+      const provider = d.cfg.models[author]?.adapter ?? null; // autor removido da config: qualquer revisor serve
       const preferred = provider === "codex" ? "sonnet-5-5" : provider === "claude-code" ? "gpt-6.1-sol" : null;
       const states = availability(d.repo);
       const rank = (n: string) => (n === preferred ? 0 : d.cfg.models[n]!.adapter !== provider ? 1 : 2);

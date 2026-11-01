@@ -16,7 +16,8 @@ const schema = z.object({ steps: z.array(z.object({
   depends_on: z.array(z.number().int().positive()),
   files: z.array(z.string().min(1)),
   acceptance: z.array(z.string().trim().min(1)).default([]),
-  risk: z.enum(["low", "high"]).default("low"),
+  // Obrigatório: omitir o risco invalida o plano (nova tentativa) em vez de virar "low" em silêncio.
+  risk: z.enum(["low", "high"]),
   risk_reasons: z.array(z.string().trim().min(1)).default([]),
 })).min(1).max(50) });
 

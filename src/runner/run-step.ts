@@ -127,7 +127,8 @@ export async function runStep(d: StepDeps, stepId: string, execution?: StepExecu
       }
       const resumed = resume;
       resume = false;
-      const rungStep: Step | null = retry ?? (failures >= cfg.escalation.max_attempts ? null : stepFor(cfg, step.tier as Tier, rung));
+      // A retomada de awaiting_review só revisa um commit que já passou: o teto de tentativas não se aplica a ela.
+      const rungStep: Step | null = retry ?? (failures >= cfg.escalation.max_attempts && !resumed ? null : stepFor(cfg, step.tier as Tier, rung));
       if (!rungStep) {
         repo.updateStep(stepId, { status: "failed" });
         return { status: "failed", attempts: n, reason: lastFailure ?? "no attempts left" };
@@ -168,7 +169,9 @@ export async function runStep(d: StepDeps, stepId: string, execution?: StepExecu
         repo.updateStep(stepId, { status: "waiting_quota" });
         return { status: "waiting_quota", attempts: n };
       }
-      const model: Config["models"][string] = cfg.models[name]!;
+      // Na retomada o autor pode ter saído da config: só a revisão roda, então o modelo não é necessário.
+      const model = cfg.models[name] as Config["models"][string];
+      if (!model && !resumed) throw new Error(`run-step: model ${name} is not configured`);
       if (!repair) repairs = 0;
       const current = retry as Retry | null;
       const effort: Effort = current?.effort ?? (!repair && rung === 1 && step.effort ? step.effort : choice.effort);

@@ -25,7 +25,8 @@ function setup(...texts: string[]) {
   const task = repo.insertTask({ request: "feature em 3 partes" });
   return { repo, calls, task, adapters: { "claude-code": adapter, "grok-build": adapter, codex: adapter } };
 }
-const steps = (...s: object[]) => JSON.stringify({ steps: s });
+// risk é obrigatório no contrato do planner; os testes que não tratam dele declaram "low".
+const steps = (...s: object[]) => JSON.stringify({ steps: s.map((x) => ({ risk: "low", ...x })) });
 
 test("decomposes with cheap low and stores steps with ids as dependencies", async () => {
   const s = setup(
@@ -148,4 +149,26 @@ test("unavailable subtask category waits without dropping to a cheaper incapable
   const out = await plan(cfg, s.adapters, s.repo, s.task.id, { cwd: "/w" });
   assert.equal(out[0]?.selection, null);
   assert.equal(s.repo.getTask(s.task.id)?.status, "waiting_quota");
+});
+
+test("acceptance, risk and risk_reasons declared by the planner are stored on the steps", async () => {
+  const s = setup(steps(
+    { tier: "mid", brief: "a", depends_on: [], files: [], acceptance: ["npm test passa"], risk: "high", risk_reasons: ["migração"] },
+    { tier: "mid", brief: "b", depends_on: [], files: ["z.ts"], risk: "high" },
+    { tier: "mid", brief: "c", depends_on: [], files: ["y.ts"] },
+  ));
+  const out = await plan(cfg, s.adapters, s.repo, s.task.id, { cwd: "/w" });
+  const stored = s.repo.listSteps(s.task.id);
+  assert.deepEqual(stored.map((x) => [x.acceptance, x.risk, x.risk_reasons]), [
+    [["npm test passa"], "high", ["migração"]],
+    [["b"], "high", ["planner"]],
+    [["c"], "low", []],
+  ]);
+  assert.deepEqual(out.map((x) => [x.acceptance, x.risk, x.risk_reasons]), stored.map((x) => [x.acceptance, x.risk, x.risk_reasons]));
+});
+
+test("a plan whose steps omit risk is rejected and nothing is stored", async () => {
+  const s = setup(JSON.stringify({ steps: [{ tier: "mid", brief: "a", depends_on: [], files: [] }] }));
+  await assert.rejects(() => plan(cfg, s.adapters, s.repo, s.task.id, { cwd: "/w" }), /planner: invalid plan/);
+  assert.equal(s.repo.listSteps(s.task.id).length, 0);
 });

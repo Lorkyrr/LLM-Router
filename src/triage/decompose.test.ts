@@ -7,12 +7,19 @@ import { ZERO_USAGE, type Adapter, type RunInput } from "../adapters/types.ts";
 import { decompose } from "./decompose.ts";
 
 const cfg = loadConfig(new URL("../../config/router.yaml", import.meta.url).pathname);
-function setup(text = "invalid") {
+// risk é obrigatório no contrato do planner; salvo `raw`, os planos de teste que não tratam dele declaram "low".
+function withRisk(text: string): string {
+  try {
+    const plan = JSON.parse(text) as { steps?: object[] };
+    return JSON.stringify({ ...plan, steps: plan.steps?.map((s) => ({ risk: "low", ...s })) });
+  } catch { return text; }
+}
+function setup(text = "invalid", raw = false) {
   const calls: RunInput[] = [];
   const adapter: Adapter = {
     async run(input) {
       calls.push(input);
-      return { ok: true, text, usage: ZERO_USAGE, cost_usd: null, quota_exhausted: false };
+      return { ok: true, text: raw ? text : withRisk(text), usage: ZERO_USAGE, cost_usd: null, quota_exhausted: false };
     },
     async ping() { return { available: true, quota_state: "ok" }; },
   };
@@ -157,4 +164,46 @@ test("references to a plan or explicit item override additive independence", asy
     assert.deepEqual(out?.[1]?.depends_on, [1]);
     assert.equal(s.calls.length, 1);
   }
+});
+
+const planText = (...steps: object[]) => JSON.stringify({ steps });
+
+test("planner contract: acceptance, risk and risk_reasons are read from the plan", async () => {
+  const s = setup(planText(
+    { phase: "implementing", brief: "Implemente o login", depends_on: [], files: [], acceptance: ["npm test passa", "login retorna 401"], risk: "high", risk_reasons: ["autenticação"] },
+    { phase: "simple_edit", brief: "Atualize o texto", depends_on: [], files: [], acceptance: ["README atualizado"], risk: "low" },
+  ), true);
+  const out = await decompose(cfg, s.adapters, "Cuide de A e também B", { cwd: "/w", repo: s.repo });
+  assert.deepEqual(out?.map((x) => [x.acceptance, x.risk, x.risk_reasons]), [
+    [["npm test passa", "login retorna 401"], "high", ["autenticação"]],
+    [["README atualizado"], "low", []],
+  ]);
+  assert.match(s.calls[0]!.prompt, /"acceptance":\[/);
+  assert.match(s.calls[0]!.prompt, /"risk":"low\|high"/);
+});
+
+test("missing acceptance is filled from the brief and high risk without reasons gets 'planner'", async () => {
+  const s = setup(planText(
+    { phase: "implementing", brief: "Migre o schema\ncom detalhes", depends_on: [], files: [], risk: "high" },
+    { phase: "implementing", brief: "x".repeat(300), depends_on: [], files: [], acceptance: [], risk: "low" },
+  ), true);
+  const out = await decompose(cfg, s.adapters, "Cuide de A e também B", { cwd: "/w", repo: s.repo });
+  assert.deepEqual(out?.[0]?.acceptance, ["Migre o schema"]);
+  assert.deepEqual(out?.[0]?.risk_reasons, ["planner"]);
+  assert.equal(out?.[1]?.acceptance[0]?.length, 200);
+  assert.deepEqual(out?.[1]?.risk_reasons, []);
+});
+
+test("a step without a declared (or with an unknown) risk makes the plan invalid instead of silently low", async () => {
+  for (const extra of [{}, { risk: "medium" }, { risk: null }]) {
+    const s = setup(planText({ phase: "implementing", brief: "Implemente cache", depends_on: [], files: [], ...extra }), true);
+    await assert.rejects(() => decompose(cfg, s.adapters, "Cuide de A e também B", { cwd: "/w", repo: s.repo }), /invalid plan/);
+    assert.equal(s.calls.length, 2);
+  }
+});
+
+test("heuristic shortcut items carry empty acceptance and low risk", async () => {
+  const s = setup();
+  const out = await decompose(cfg, s.adapters, "Renomeie o título e também planeje a arquitetura", { cwd: "/w", repo: s.repo });
+  assert.ok(out?.every((x) => x.risk === "low" && x.acceptance.length === 0 && x.risk_reasons.length === 0));
 });

@@ -7,6 +7,7 @@ import { fakeExec, ok, fail } from "../../test/fixtures/fake-exec.ts";
 import { openDb } from "../store/db.ts";
 import { makeRepo } from "../store/repo.ts";
 import { runPlan } from "./run-plan.ts";
+import { AGENT_TIMEOUT_MS } from "./run-step.ts";
 
 const cfg = loadConfig(new URL("../../config/router.yaml", import.meta.url).pathname);
 const usage = { input_tokens: 1, output_tokens: 1, cache_read_tokens: 0, cache_write_tokens: 0 };
@@ -159,7 +160,13 @@ for (const unavailable of ["disabled", "exhausted", "quota"] as const) {
     assert.equal(s.repo.getTask(s.task.id)!.status, "awaiting_review");
     assert.ok(!s.deps.exec.calls.some(c => c.cmd === "gh"));
     assert.ok(!s.started.includes("passo 2"));
-    assert.equal(s.runs.filter(r => r.readOnly).length > 0, unavailable === "quota");
+    // Autor gpt-6.1-sol: candidatos em ordem = par preferido (sonnet-5-5) e depois o outro mid (gpt-6.1-terra); cada um é tentado uma vez.
+    const expected = unavailable === "quota" ? ["sonnet-5-5", "gpt-6.1-terra"] : ["gpt-6.1-terra"];
+    assert.deepEqual(s.runs.filter(r => r.readOnly).map(r => r.model), expected.map(n => cfg.models[n]!.id));
+    const reviews = s.repo.listAttempts(step.id).filter(a => a.kind === "review");
+    assert.deepEqual(reviews.map(a => a.model), expected);
+    assert.ok(reviews.every(a => a.ci_result?.startsWith("review_waiting_quota") && a.failure_reason === "quota exhausted"));
+    assert.equal(s.runs.filter(r => !r.readOnly).length, 1);
     assert.ok(s.repo.listAttempts(step.id).every(a => a.finished_at));
   });
 }
@@ -402,4 +409,133 @@ test("staged: PRs left open count as satisfied prerequisites and the task waits 
   const history = exec.calls.find((c) => c.args[0] === "hash-object")!.opts!.input!;
   assert.equal(JSON.parse(history.split("\n")[1]!).status, "awaiting_release");
   assert.equal(exec.calls.find((c) => c.args[0] === "worktree" && c.args[1] === "add" && c.args.includes("origin/router/step-" + one.id.slice(0, 8)))?.args[0], "worktree");
+});
+
+const approve = () => ({ ...good, text: '{"approved":true,"findings":[]}' });
+
+test("declared risk high requires cross review even when no heuristic fires; acceptance reaches author and reviewer", async () => {
+  const s = setup();
+  const step = s.repo.insertStep({ task_id: s.task.id, seq: 1, brief: "Ajuste o texto", tier: "mid", phase: "implementing", depends_on: [], files: [],
+    acceptance: ["npm test passa"], risk: "high", risk_reasons: ["contrato público"] });
+  assert.deepEqual((await runPlan(withReviews(s, approve), s.task.id)).done, [1]);
+  const author = s.runs.find(r => !r.readOnly)!;
+  assert.match(author.prompt, /^Ajuste o texto\n\nCritérios de aceite:\n- npm test passa$/);
+  const reviewer = s.runs.filter(r => r.readOnly);
+  assert.equal(reviewer.length, 1);
+  const payload = JSON.parse(reviewer[0]!.prompt.split("\n\n").at(-1)!);
+  assert.deepEqual(payload.acceptance, ["npm test passa"]);
+  assert.deepEqual(payload.handoff.risk, ["declared:contrato público"]);
+  assert.match(s.repo.listAttempts(step.id).find(a => a.kind === "review")!.reason!, /declared:contrato público/);
+});
+
+test("declared high risk without reasons is recorded as declared:planner; declared low with a trivial diff skips review", async () => {
+  const s = setup();
+  s.repo.insertStep({ task_id: s.task.id, seq: 1, brief: "Ajuste o texto", tier: "mid", phase: "implementing", depends_on: [], files: [], risk: "high" });
+  assert.deepEqual((await runPlan(withReviews(s, approve), s.task.id)).done, [1]);
+  assert.deepEqual(JSON.parse(s.runs.find(r => r.readOnly)!.prompt.split("\n\n").at(-1)!).handoff.risk, ["declared:planner"]);
+
+  const low = setup();
+  low.repo.insertStep({ task_id: low.task.id, seq: 1, brief: "Ajuste o texto", tier: "mid", phase: "implementing", depends_on: [], files: [], risk: "low" });
+  assert.deepEqual((await runPlan(withReviews(low, approve), low.task.id)).done, [1]);
+  assert.equal(low.runs.filter(r => r.readOnly).length, 0);
+});
+
+test("the retry prompt keeps the acceptance criteria next to the previous failure", async () => {
+  let calls = 0;
+  const s = setup(() => (++calls === 1 ? bad() : good));
+  s.repo.insertStep({ task_id: s.task.id, seq: 1, brief: "passo 1", tier: "mid", depends_on: [], files: [], acceptance: ["a", "b"] });
+  assert.deepEqual((await runPlan(s.deps, s.task.id)).done, [1]);
+  assert.match(s.runs[1]!.prompt, /Critérios de aceite:\n- a\n- b\n\nA tentativa anterior falhou: boom/);
+});
+
+test("awaiting_review resumes with the review alone even after the attempt budget is spent", async () => {
+  const s = setup();
+  const step = risky(s);
+  const spent = s.repo.insertAttempt({ step_id: step.id, n: 1, adapter: "codex", model: "gpt-6.1-sol", tier: "mid", effort: "medium", runner: "hosted", kind: "task" });
+  s.repo.finishAttempt(spent.id, { failure_reason: "boom" });
+  s.repo.updateStep(step.id, { status: "awaiting_review", branch: "router/step-abcd1234", handoff: {
+    step_id: step.id, brief: step.brief, diff: "d", findings: ["feito"], model: "gpt-6.1-sol", risk: ["sensitive_files"], review: null } });
+  const config = { ...cfg, escalation: { ...cfg.escalation, max_attempts: 1 } };
+  const out = await runPlan({ ...withReviews(s, approve), cfg: config }, s.task.id);
+  assert.deepEqual(out.done, [1]);
+  assert.equal(s.runs.filter(r => !r.readOnly).length, 0);
+  assert.equal(s.runs.filter(r => r.readOnly).length, 1);
+});
+
+test("awaiting_review resumes with just the review when the author model left the config", async () => {
+  const s = setup();
+  const step = risky(s);
+  s.repo.updateStep(step.id, { status: "awaiting_review", branch: "router/step-abcd1234", handoff: {
+    step_id: step.id, brief: step.brief, diff: "d", findings: ["feito"], model: "modelo-removido", risk: ["sensitive_files"], review: null } });
+  const out = await runPlan(withReviews(s, approve), s.task.id);
+  assert.deepEqual(out.done, [1]);
+  assert.equal(s.runs.filter(r => !r.readOnly).length, 0);
+  assert.deepEqual(s.repo.listAttempts(step.id).map(a => [a.kind, a.model]), [["review", "sonnet-5-5"]]);
+});
+
+test("author timeout is a failure that tries every mid model, then fails the step and blocks dependents", async () => {
+  const s = setup(() => ({ ...bad(), error: "timeout" }));
+  const a = s.mk(1);
+  s.mk(2, [a.id]);
+  assert.deepEqual(await runPlan(s.deps, s.task.id), { done: [], failed: [1], blocked: [2], waiting_quota: [] });
+  const attempts = s.repo.listAttempts(a.id);
+  assert.equal(attempts.length, cfg.escalation.max_attempts);
+  assert.equal(new Set(attempts.map(x => x.model)).size, attempts.length);
+  assert.ok(attempts.every(x => x.failure_reason === "timeout" && x.finished_at));
+  assert.ok(s.runs.every(r => r.timeoutMs === AGENT_TIMEOUT_MS && !r.readOnly));
+  assert.equal(s.repo.getTask(s.task.id)!.status, "failed");
+  assert.ok(!s.deps.exec.calls.some(c => c.cmd === "gh"));
+});
+
+test("author out of quota hands over to the next model, whose cross review falls back to an available reviewer", async () => {
+  const s = setup();
+  const step = risky(s);
+  const base = withReviews(s, approve);
+  const adapters = Object.fromEntries(Object.entries(base.adapters).map(([name, adapter]) => [name, {
+    ...adapter, async run(i: RunInput) {
+      if (i.readOnly || i.model !== cfg.models["gpt-6.1-sol"]!.id) return adapter.run(i);
+      s.runs.push(i);
+      return bad(true);
+    },
+  }])) as typeof s.deps.adapters;
+  assert.deepEqual((await runPlan({ ...base, adapters }, s.task.id)).done, [1]);
+  assert.deepEqual(s.runs.filter(r => !r.readOnly).map(r => r.model), [cfg.models["gpt-6.1-sol"]!.id, cfg.models["sonnet-5-5"]!.id]);
+  assert.deepEqual(s.repo.listAttempts(step.id).map(a => [a.kind, a.model, a.failure_reason]), [
+    ["task", "gpt-6.1-sol", "quota exhausted"], ["task", "sonnet-5-5", null], ["review", "gpt-6.1-terra", null],
+  ]);
+  assert.equal(s.repo.listAttempts(step.id).at(-1)!.ci_result, "review_passed");
+  assert.equal(s.repo.listModels().find(m => m.name === "gpt-6.1-sol")?.available, false);
+});
+
+function noChanges(s: ReturnType<typeof setup>, gate: () => ReturnType<typeof ok>) {
+  const config = { ...cfg, verify: { ...cfg.verify, mode: "local" as const, local: { cmds: [["npm", "test"]], timeout_s: 60 }, auto_merge: false } };
+  const exec = fakeExec([
+    { when: c => c.args[0] === "status", reply: ok("") },
+    { when: c => c.cmd === "npm", reply: gate },
+    { when: () => true, reply: c => s.deps.exec(c.cmd, c.args, c.opts) },
+  ]);
+  return { ...s.deps, cfg: config, exec };
+}
+
+test("no changes with a passing gate finishes the plan as already satisfied, without review or retry", async () => {
+  const s = setup();
+  const step = risky(s);
+  const deps = noChanges(s, () => ok());
+  assert.deepEqual(await runPlan(deps, s.task.id), { done: [1], failed: [], blocked: [], waiting_quota: [] });
+  assert.equal(s.runs.length, 1);
+  assert.deepEqual(s.repo.listAttempts(step.id).map(a => [a.kind, a.ci_result]), [["task", "already satisfied"]]);
+  assert.equal(deps.exec.calls.filter(c => c.cmd === "npm").length, 1);
+  assert.equal(s.repo.getTask(s.task.id)!.status, "done");
+});
+
+test("no changes with a failing gate retries once with the same model, then fails the plan", async () => {
+  const s = setup();
+  const step = s.mk(1);
+  s.mk(2, [step.id]);
+  const deps = noChanges(s, () => fail("missing export foo"));
+  assert.deepEqual(await runPlan(deps, s.task.id), { done: [], failed: [1], blocked: [2], waiting_quota: [] });
+  assert.equal(s.runs.length, 2);
+  assert.equal(s.runs[0]!.model, s.runs[1]!.model);
+  assert.match(s.runs[1]!.prompt, /não alterou nada[\s\S]*missing export foo/);
+  assert.equal(s.repo.getTask(s.task.id)!.status, "failed");
 });

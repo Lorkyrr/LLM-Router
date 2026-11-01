@@ -84,7 +84,7 @@ test("route with override_tier skips triage and strong goes to plan", async () =
 
 test("plan returns steps with dependencies as seq numbers", async () => {
   const { call, repo } = await connect([JSON.stringify({ steps: [
-    { tier: "mid", brief: "a", depends_on: [], files: ["x"] }, { tier: "mid", brief: "b", depends_on: [], files: ["x"] },
+    { tier: "mid", brief: "a", depends_on: [], files: ["x"], risk: "low" }, { tier: "mid", brief: "b", depends_on: [], files: ["x"], risk: "low" },
   ] })]);
   const task = repo.insertTask({ request: "r" });
   const { body } = await call("plan", { task_id: task.id });
@@ -149,7 +149,7 @@ test("route on a non-strong tier creates the single step that run_plan executes"
 });
 
 test("run_plan refuses a task with no steps and plan refuses to duplicate steps", async () => {
-  const { call, repo } = await connect([JSON.stringify({ steps: [{ tier: "mid", brief: "a", depends_on: [], files: [] }] })]);
+  const { call, repo } = await connect([JSON.stringify({ steps: [{ tier: "mid", brief: "a", depends_on: [], files: [], risk: "low" }] })]);
   const task = repo.insertTask({ request: "r" });
   const r = await call("run_plan", { task_id: task.id });
   assert.equal(r.error, true);
