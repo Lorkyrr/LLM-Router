@@ -1,65 +1,164 @@
 # LLM-Router
 
-Servidor MCP local que classifica tarefas, escolhe modelo e esforço, divide trabalho em passos e executa agentes em worktrees com verificação por CI.
+Router MCP por **stdio**, em TypeScript, que faz triagem (`triage`), planeja (`plan`) e roteia tarefas de programação para Claude Code e Codex CLI, escolhendo modelo, categoria (`tier`: `cheap`, `mid`, `strong`) e esforço por fase. Executa passos em worktrees Git e registra estado, tentativas e uso em SQLite.
 
-## Agentes
+Para o uso pretendido por enquanto, com Claude Code e Codex, **mantenha Grok desativado**. O catálogo versionado, porém, ainda mantém `grok-fast` e `grok-reasoning` habilitados, e o adaptador `grok-build` continua registrado. Para operar sem Grok, defina `enabled: false` nesses dois modelos no catálogo usado pelo servidor. O transporte do Grok Bot ainda não foi configurado.
 
-- Claude Code: `claude -p --output-format json`.
-- Grok Build: `grok -p --output-format json`.
-- Codex: `codex exec --json --ephemeral`, com sandbox e modelo/esforço explícitos.
+Os trabalhadores abrem sessões novas, com modelo e esforço explícitos, sem alterar o modelo da conversa que chamou o MCP. As preferências atuais são Opus para planejamento, Sol para implementação e Astra para integração/revisão, com alternativas da mesma categoria. São hipóteses de configuração, ainda sem benchmark comparativo local. Terra permanece desativado.
 
-Os executáveis precisam estar no `PATH` e autenticados. Codex CLI 0.166.0 foi inspecionado nesta integração; suporte de cada modelo depende da conta e é verificado por ping. Os trabalhadores abrem sessões novas, sem alterar o modelo da conversa que chamou o MCP.
+## Instalação
 
-## Desenvolvimento
+Requer Node.js >=24, npm, Python 3, Git e os CLIs `claude` e `codex` no `PATH`, autenticados. Os modos com GitHub também exigem `gh` autenticado, remoto `origin`, permissões para publicar branches/PRs e infraestrutura de CI no repositório alvo.
 
-Requer Node.js >=24, Git e GitHub CLI (`gh`); o launcher compatível com sandboxes usa Python 3. Para executar passos são necessários autenticação GitHub, permissão de PR e runner de verificação do repositório alvo.
+Na pasta da instalação do LLM-Router:
 
 ```bash
 npm ci
 npm test
 npm run typecheck
-ROUTER_REPO_DIR=/caminho/do/projeto npm start
 ```
 
-Conecte `npm start` pelo cliente MCP via stdio. A inicialização faz pings pagos dos modelos habilitados. Configure `ROUTER_CONFIG` e `ROUTER_DB` para substituir catálogo e banco padrão. O banco global não identifica repositórios por tarefa: use um `ROUTER_DB` por projeto ao trabalhar com vários repositórios.
+O cliente MCP inicia o servidor sob demanda; não é necessário um daemon. Use [bin/router-mcp.py](bin/router-mcp.py): ele encaminha pipes reais para Node e carrega o `tsx` por caminho absoluto, inclusive fora da instalação. `ROUTER_NODE` ou `--node` seleciona o executável Node quando necessário.
 
-## Uso por MCP
+### Registro no Claude Code
 
-1. `route({request})` retorna categoria/modelo/esforço; modelos com metadados também retornam diretriz e origem do preço.
-2. Se `next` for `plan`, chame `plan({task_id})`.
-3. `run_plan({task_id})` inicia passos. O fluxo publica PRs e tenta merge após CI; execute apenas em repositórios autorizados.
-4. `status({task_id})` acompanha resultados e custo registrado/estimado.
+Substitua os caminhos absolutos abaixo pelos da instalação e do projeto alvo:
 
-`check_models` testa disponibilidade; `relay` usa fallback Claude enquanto o bot não estiver configurado. `phases.<fase>.prefer` divide responsabilidades: Opus planeja, Sol implementa e Astra integra/revisa, com fallback entre agentes da mesma categoria. Para triagem Codex, use `triage.model: gpt-6-luna`. Detalhes e ressalvas estão na política de modelos.
+```bash
+claude mcp add --transport stdio --scope local \
+  --env ROUTER_REPO_DIR=/caminho/absoluto/do/projeto \
+  --env ROUTER_DB=/caminho/absoluto/do/projeto/.router/router.db \
+  --env ROUTER_CHECK_MODELS=manual \
+  llm-router -- python3 /caminho/absoluto/LLM-Router/bin/router-mcp.py
 
-## Modo local (sem GitHub nem CI)
+claude mcp get llm-router
+```
 
-`ROUTER_LOCAL_TEST="npm run typecheck && npm test"` (ou `verify.mode: local` + `verify.local.cmds` no catálogo; comandos em ordem, o primeiro que falhar encerra) faz `run_plan` trabalhar só com Git local. Cada passo roda num worktree em `.worktrees/` e o comando de teste no worktree decide o resultado. Teste vermelho reentra na escada de esforço com a saída no prompt. Teste verde faz rebase no base e fast-forward no checkout do projeto, serializado entre passos paralelos. Sem `git fetch`, push, PR nem `gh`.
+Abra uma nova sessão no projeto e confira `/mcp`.
 
-### Modo staged: gate local e depois PR + CI + auto-merge
+### Registro no Codex
 
-`ROUTER_VERIFY_MODE=staged` (ou `verify.mode: staged`) usa os mesmos `verify.local.cmds` como **gate local**: depois de `git fetch` e rebase em `origin/<base>`, os comandos rodam no worktree. Vermelho ou conflito volta ao agente (`ci_result` `local_failed`/`local_conflict`) sem push nem PR. Verde faz push e **abre o PR, e para aí**: o passo fica `pr_open` e a tarefa `awaiting_release`. Nenhum CI do GitHub roda e nada é mergeado até você sinalizar.
+```bash
+codex mcp add \
+  --env ROUTER_REPO_DIR=/caminho/absoluto/do/projeto \
+  --env ROUTER_DB=/caminho/absoluto/do/projeto/.router/router.db \
+  --env ROUTER_CHECK_MODELS=manual \
+  llm-router -- python3 /caminho/absoluto/LLM-Router/bin/router-mcp.py
 
-O sinal é a ferramenta MCP `release` (ou `gh workflow run router-release.yml`). O workflow compara todos os PRs `router/*` abertos (arquivos em comum), roda o CI de cada um sobre a base atualizada (`ci/pr-ci.sh`), faz merge (rebase) dos verdes, apaga o branch e comenta nos vermelhos, que ficam abertos. PR empilhado sobre um que não passou é pulado. Depois, `release {sync_only: true}` (ou o fim do workflow disparado pelo MCP) atualiza o estado local: mergeado vira `done` e perde worktree/branch locais. Passos dependentes de um PR ainda aberto partem do branch dele. O `router-verify` ignora PRs `router/*`. `verify.auto_merge` não vale no `staged`: quem mergeia é o `release`. Exige remoto, `gh` autenticado e runner de CI; veja `docs/staged-verify-design.md`.
+codex mcp get llm-router
+```
 
-- O checkout de `ROUTER_REPO_DIR` precisa estar no branch base (`main`, ou `ROUTER_BASE`); caso contrário o passo falha em vez de mesclar no branch errado. Arquivos não commitados que colidam com o merge também o fazem falhar.
-- `verify.auto_merge: false` deixa o branch `router/step-*` e o worktree para revisão; o passo conta como `done`. Nos modos `pr` e `staged` o PR fica aberto após o CI verde, sem merge.
-- Os testes não rodam de novo após o rebase. Teste com git real e agente falso: `src/runner/run-step.local.test.ts`. Nenhum modelo real foi usado nesse fluxo.
+Use o mesmo `ROUTER_DB` nos clientes que coordenam o mesmo projeto. Para outro projeto, use outro banco e ajuste `ROUTER_REPO_DIR`. O banco padrão é `~/.local/share/llm-router/router.db`, e as tarefas não têm identificação de repositório: compartilhar esse banco entre projetos pode misturar estados.
 
-## Conexão ao Claude Code
+`ROUTER_CHECK_MODELS=manual` evita pings pagos ao abrir o cliente. Sem essa opção, o servidor verifica modelos na inicialização e tenta novamente os indisponíveis a cada 30 minutos. `check_models` continua disponível sob demanda e consome tokens. Autenticação e presença no catálogo não comprovam acesso a um modelo.
 
-O servidor está registrado como `llm-router` em `~/.claude.json` com o comando Python e caminhos absolutos. Abra uma nova sessão do Claude Code e confira `/mcp`, ou execute `claude mcp get llm-router`. A conexão stdio é iniciada pelo cliente; não exige um daemon independente.
+## Ferramentas MCP
 
-`bin/router-mcp.py` encaminha pipes convencionais para Node, evitando perda de stdio em sandboxes que bloqueiam identificação de sockets. O import absoluto do tsx funciona mesmo fora do diretório de instalação. `ROUTER_CHECK_MODELS=manual` desativa pings automáticos; `check_models` continua disponível sob demanda. O registro local usa esse modo para que abrir Claude não faça chamadas pagas inesperadas.
+| Ferramenta | Entrada | Comportamento |
+| --- | --- | --- |
+| `route` | `request`, `override_tier?` | Classifica a fase, cria a tarefa e retorna `task_id`, tier, modelo, adaptador, esforço e `next` (`plan`, `run` ou `wait`). Inclui diretriz e fonte de preço quando disponíveis. |
+| `plan` | `task_id` | Usa um modelo forte para dividir a tarefa em passos com briefs, arquivos, categorias e dependências. |
+| `run_plan` | `task_id` | Inicia os passos em segundo plano e retorna os números dos passos iniciados e aguardando dependências. |
+| `status` | `task_id?` | Retorna custos agregados; com ID, inclui tarefa, passos e tentativas. |
+| `check_models` | `{}` | Faz ping dos modelos habilitados e grava disponibilidade e estado de cota. |
+| `relay` | `body`, `task_id?` | Tenta enviar uma mensagem ao Grok Bot; com o transporte atual indisponível, registra fallback para o canal Claude e retorna `delivered: false`. |
+| `release` | `sync_only?` | Sinaliza a liberação dos PRs staged pelo workflow; com `sync_only: true`, apenas sincroniza o estado local com o GitHub. |
 
-O handshake real foi validado com o SDK MCP. Neste sandbox, `claude mcp get` fecha a conexão antes de enviar o handshake; criar sockets retorna `EPERM` e consultas externas apresentam falha de DNS. Portanto o registro está preparado, mas conexão do Claude e modelos reais ainda precisam ser confirmados em terminal sem essas restrições. Veja o relatório de validação em `docs/e2e-smoke.md`.
+Fluxo habitual:
 
-## Documentação
+1. Chame `route({request: "..."})`.
+2. Se `next` for `plan`, chame `plan({task_id: "..."})`. Tarefas `cheap`/`mid` já recebem um passo único; `wait` indica ausência de modelo disponível.
+3. Chame `run_plan({task_id: "..."})` e acompanhe `status({task_id: "..."})`.
+4. No modo `staged`, os PRs aguardam `release({})`. Depois, `release({sync_only: true})` permite atualizar o estado local se necessário.
 
-- [Arquitetura e limites atuais](ARQUITETURA.md)
-- [Preços e diretrizes](docs/model-policy.md)
-- [Cooperação entre agentes e próxima integração Grok-Bot](docs/agent-cooperation.md)
-- [Instruções para contribuidores e agentes](AGENTS.md)
-- [Validação manual](docs/e2e-smoke.md)
+Os custos misturam dados devolvidos pelos CLIs e estimativas do catálogo. Não são fatura nem saldo da assinatura; `status` informa `billing_verified: false`.
 
-O workflow cloud permanece esqueleto: banco remoto, instalação dos CLIs e acionamento da verificação precisam de integração. O adaptador Codex não resolve essas pendências. Os testes reais de leitura tentados não completaram; não há validação ponta a ponta com os modelos.
+## Configuração
+
+[config/router.yaml](config/router.yaml) define modelos, preços e fontes, triagem, categorias, preferências por fase (`phases.<fase>.prefer`), escadas de esforço e verificação. Modelos com `enabled: false` não são selecionados nem pingados. Preferências dependem da disponibilidade local; falta de cota permite fallback na mesma categoria.
+
+| Variável | Função |
+| --- | --- |
+| `ROUTER_CONFIG` | Caminho de um catálogo alternativo; o padrão vem da instalação. |
+| `ROUTER_DB` | Caminho do SQLite; use um por projeto. |
+| `ROUTER_REPO_DIR` | Repositório alvo; padrão: diretório de trabalho do processo. |
+| `ROUTER_BASE` | Branch base; padrão: `main`. |
+| `ROUTER_CHECK_MODELS` | `manual` desliga as verificações automáticas de modelos. |
+| `ROUTER_LOCAL_TEST` | Atalho para comandos locais, por exemplo `npm run typecheck && npm test`. |
+| `ROUTER_VERIFY_MODE` | Com o atalho `ROUTER_LOCAL_TEST`, escolhe `local` (padrão do atalho) ou `staged`. Para `pr`, use o YAML. |
+| `ROUTER_RUNNER` | Instância do runner; por padrão derivada como `owner-repo` do remoto `origin`. |
+
+`ROUTER_LOCAL_TEST` é separado por `&&` e espaços, sem interpretação completa de shell. Para definir argumentos diretamente, use listas em `verify.local.cmds`:
+
+```yaml
+verify:
+  mode: staged  # local | pr | staged
+  local:
+    cmds:
+      - [npm, run, typecheck]
+      - [npm, test]
+    timeout_s: 1800
+  auto_merge: true
+  delete_branch: true
+```
+
+### Verificação e push de branches
+
+| Modo | Verificação | Resultado |
+| --- | --- | --- |
+| `local` | Comandos locais em sequência no worktree; falha retorna ao agente com a saída. | Com `auto_merge: true`, rebase na base local e fast-forward no checkout do projeto. Sem fetch, push, PR ou GitHub. |
+| `pr` | Publica branch e PR e acompanha os checks do GitHub. | Pode fazer merge após checks verdes e remover o branch conforme a configuração. |
+| `staged` | Fetch, rebase em `origin/<base>` e comandos locais antes de publicar. | Gate verde faz push e abre PR; passo fica `pr_open` e tarefa `awaiting_release`. CI e merge aguardam `release`. |
+
+O catálogo atual omite `verify.mode`, cujo padrão é `pr`. Os modos `local` e `staged` exigem `verify.local.cmds`. No `local`, o checkout alvo precisa estar no branch base para o merge automático; com `auto_merge: false`, o resultado permanece no branch/worktree para revisão. No `pr`, essa opção mantém o PR aberto após checks verdes. No `staged`, quem faz o merge é o workflow de release; `verify.auto_merge` não controla essa etapa.
+
+No modo `local`, os testes rodam antes do rebase e não são repetidos depois dele.
+
+Cada passo usa um branch `router/step-*` e worktree em `.worktrees/`. **`run_plan` pode publicar alterações**: nos modos `pr` e `staged`, o push usa `git push -u --force-with-lease origin <branch>` para publicar ou atualizar o branch do passo após rebases. No `staged`, falha no gate local impede push e criação do PR. Passos dependentes podem partir do branch de um PR ainda aberto.
+
+O release compara os PRs abertos com prefixo `router/`, verifica cada um sobre a base atualizada, faz merge por rebase dos verdes e remove seus branches remotos. PRs com falha ficam abertos; dependentes de um PR que não passou são pulados. A sincronização marca passos mergeados como `done` e remove seus worktrees e branches locais.
+
+## CI, runner e cluster
+
+O CI de verificação e release usa runner **self-hosted** com labels `[self-hosted, router-ci]`. [ci/runner-install.sh](ci/runner-install.sh) registra um runner por repositório (`ci/runner-install.sh owner/repo`), com `gh` autenticado e permissão administrativa. Os scripts usam serviços de usuário do systemd; o runner também precisa de `kind`, `kubectl` e ambiente capaz de criar o cluster.
+
+O router liga o runner sob demanda durante a verificação/release. [ci/pr-ci.sh](ci/pr-ci.sh) instala dependências, sobe ou reaproveita o cluster kind `router-ci`, compara falhas de testes com a base estável e executa o typecheck. Ao terminar, [ci/runner-down.sh](ci/runner-down.sh) desliga o runner e remove o cluster quando não há CI em execução ou na fila dos repositórios registrados. `KIND_CLUSTER` permite mudar o nome do cluster.
+
+O fluxo `staged` dos PRs `router/*` exige liberação manual, via `release({})` ou:
+
+```bash
+gh workflow run router-release.yml
+```
+
+Os workflows existentes têm estes gatilhos:
+
+- [router-release.yml](.github/workflows/router-release.yml): somente manual (`workflow_dispatch`), no runner self-hosted.
+- [router-cloud.yml](.github/workflows/router-cloud.yml): somente manual (`workflow_dispatch`), em runner hospedado; **é um esqueleto incompleto**, sem execução ponta a ponta comprovada.
+- [router-verify.yml](.github/workflows/router-verify.yml): automático em `pull_request`, mas ignora branches `router/*`, que aguardam release. Portanto, os workflows do repositório **ainda não são todos manuais**.
+
+O modo `pr` depende de checks efetivamente disparados no repositório alvo; neste repositório, `router-verify` ignora os PRs do router. Para gate local seguido de liberação manual, use `staged`.
+
+## Documentação e limites atuais
+
+- [Arquitetura](ARQUITETURA.md) — inclui o desenho original e intenções futuras; nem tudo do diagrama está implementado.
+- [Política de modelos, preços e sandbox](docs/model-policy.md).
+- [Verificação staged](docs/staged-verify-design.md) — a revisão no início atualiza o desenho para release manual.
+- [Validação e smoke manual](docs/e2e-smoke.md) — resultados observados e procedimento com modelos reais.
+- [Integração Codex](docs/codex-implementation-plan.md).
+- [Integração de subprocessos e stdio](docs/exec-integration-plan.md).
+- [Instruções para contribuidores e agentes](AGENTS.md).
+
+Os testes usam subprocessos simulados e Git real em repositórios temporários, sem chamar modelos pagos. O handshake MCP por processo real foi validado; o relatório existente não comprova um ciclo completo de implementação/revisão com modelos reais. O modo nuvem ainda depende de integração do banco, instalação dos CLIs e acionamento da verificação. Importadores de sessão e adaptadores Zed/Antigravity permanecem fora da implementação atual.
+
+## Roadmap — planejado
+
+Os itens abaixo são próximos passos, não funcionalidades entregues:
+
+- **Decomposição multi-tarefa:** ampliar a divisão do pedido em tarefas coordenadas; hoje o planejador divide uma tarefa em passos com dependências e arquivos.
+- **Reparo pontual antes de escalar:** corrigir a falha específica antes de subir modelo/esforço; hoje a falha volta ao agente pela escada configurada.
+- **Adapters automáticos:** automatizar a integração de adaptadores; hoje o registro é explícito em `src/adapters/registry.ts`.
+- **Roteamento implícito:** encaminhar pedidos sem exigir a chamada explícita de `route`; hoje o hook de prompt apenas registra mensagens no banco.
+
+## Licença
+
+GPL-3.0-or-later.
