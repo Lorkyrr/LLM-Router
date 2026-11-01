@@ -82,7 +82,7 @@ function executionFor(d: StepDeps, step: Step): StepExecution {
           failure = reviewed.error ?? "review failed";
         } else {
           try {
-            const verdict = reviewSchema.parse(JSON.parse(reviewed.text));
+            const verdict = reviewSchema.parse(extractJson(reviewed.text));
             handoff.review = { model: name, ...verdict };
             if (!verdict.approved) failure = verdict.findings.join("\n") || "review rejected without findings";
           } catch {
@@ -184,4 +184,18 @@ export async function runPlan(d: StepDeps, taskId: string): Promise<PlanOutcome>
   d.repo.updateTask(taskId, { status });
   await backupState(d);
   return out;
+}
+
+/** Modelos costumam embrulhar o JSON em cercas ``` ou texto; extrai o primeiro objeto válido. */
+export function extractJson(text: string): unknown {
+  const t = text.trim();
+  try { return JSON.parse(t); } catch {}
+  const fence = t.match(/```(?:json)?\s*([\s\S]*?)```/);
+  if (fence) { try { return JSON.parse(fence[1]!.trim()); } catch {} }
+  for (let i = t.indexOf("{"); i !== -1; i = t.indexOf("{", i + 1)) {
+    for (let j = t.lastIndexOf("}"); j > i; j = t.lastIndexOf("}", j - 1)) {
+      try { return JSON.parse(t.slice(i, j + 1)); } catch {}
+    }
+  }
+  throw new Error("no JSON object found");
 }
