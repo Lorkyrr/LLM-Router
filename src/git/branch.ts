@@ -1,4 +1,5 @@
 import { join } from "node:path";
+import { existsSync, readFileSync, symlinkSync } from "node:fs";
 import type { Exec } from "../exec.ts";
 
 async function must(exec: Exec, cmd: string, args: string[], cwd: string): Promise<string> {
@@ -23,6 +24,16 @@ export async function startBranch(exec: Exec, o: { repoDir: string; branch: stri
   // Modo local não tem remoto: parte do base local, que já recebe os merges dos passos anteriores.
   if (!o.local) await must(exec, "git", ["fetch", "origin", o.base], o.repoDir);
   await must(exec, "git", ["worktree", "add", "-b", o.branch, worktree, o.from ?? (o.local ? o.base : `origin/${o.base}`)], o.repoDir);
+  const lock = join(worktree, "package-lock.json");
+  if (existsSync(lock)) {
+    const repoLock = join(o.repoDir, "package-lock.json");
+    const modules = join(o.repoDir, "node_modules");
+    if (existsSync(repoLock) && existsSync(modules) && readFileSync(lock).equals(readFileSync(repoLock))) {
+      symlinkSync(modules, join(worktree, "node_modules"), "dir");
+    } else {
+      await must(exec, "npm", ["ci"], worktree);
+    }
+  }
   return worktree;
 }
 

@@ -1,10 +1,41 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
+import { mkdtempSync, mkdirSync, writeFileSync, readlinkSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { fakeExec, ok, fail } from "../../test/fixtures/fake-exec.ts";
 import { startBranch, publishBranch, commitAll, resolveBase } from "./branch.ts";
 
 const is = (cmd: string, ...sub: string[]) => (c: { cmd: string; args: string[] }) =>
   c.cmd === cmd && sub.every((s, i) => c.args[i] === s);
+
+for (const scenario of ["matching", "different", "missing modules", "install failure"] as const) {
+  test(`startBranch prepares dependencies: ${scenario}`, async (t) => {
+    const repoDir = mkdtempSync(join(tmpdir(), "router-deps-"));
+    t.after(() => rmSync(repoDir, { recursive: true, force: true }));
+    const worktree = join(repoDir, ".worktrees", "router-step-1");
+    mkdirSync(worktree, { recursive: true });
+    writeFileSync(join(repoDir, "package-lock.json"), "lock");
+    writeFileSync(join(worktree, "package-lock.json"), scenario === "different" ? "other" : "lock");
+    if (scenario !== "missing modules") mkdirSync(join(repoDir, "node_modules"));
+    const exec = fakeExec([
+      { when: is("git"), reply: ok() },
+      { when: is("npm", "ci"), reply: scenario === "install failure" ? fail("install failed") : ok() },
+    ]);
+    if (scenario === "install failure") {
+      rmSync(join(repoDir, "node_modules"), { recursive: true });
+      await assert.rejects(() => startBranch(exec, { repoDir, branch: "router/step-1", base: "main" }), /install failed/);
+      return;
+    }
+    await startBranch(exec, { repoDir, branch: "router/step-1", base: "main" });
+    if (scenario === "matching") {
+      assert.equal(readlinkSync(join(worktree, "node_modules")), join(repoDir, "node_modules"));
+      assert.ok(!exec.calls.some((c) => c.cmd === "npm"));
+    } else {
+      assert.deepEqual(exec.calls.at(-1), { cmd: "npm", args: ["ci"], opts: { cwd: worktree } });
+    }
+  });
+}
 
 test("startBranch creates a worktree on a new branch off the base", async () => {
   const exec = fakeExec([{ when: is("git"), reply: ok() }]);
