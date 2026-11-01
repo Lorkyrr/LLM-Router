@@ -16,7 +16,105 @@ Em nova solicitação do usuário, Claude Sonnet 5.5 em `medium` recebeu a respo
 
 Diagnóstico independente com `socket.getaddrinfo`: tanto `api.anthropic.com` quanto `claude.ai` retornaram `gaierror [Errno -3] Temporary failure in name resolution`. Esse bloqueio de DNS impede comprovar comunicação externa neste ambiente; não permite concluir que o adaptador ou o modelo sejam incompatíveis. Nenhum isolamento foi removido. Os testes locais do adaptador Claude e do agendador passaram (runner reportou dois arquivos passando), e o typecheck terminou com código 0. Esses testes usam execução simulada e não comprovam inferência remota. Nenhuma mudança na fila foi atribuída ao Claude ou implementada como se houvesse colaboração concluída. Retomar a mesma divisão em ambiente com conectividade antes de declarar integração ponta a ponta.
 
+## Contrato de cooperação v1
+
+**Status: proposto, aguardando aprovação do usuário.** Por enquanto só descreve o contrato; nada do que segue foi implementado. Os pontos de código citados são os que vão mudar quando o contrato for aprovado: `src/triage/decompose.ts` (schema e prompt), `src/planner/planner.ts` (`storeItems`), `src/runner/run-plan.ts` (agendamento e revisão), além de `src/store/db.ts`/`repo.ts` e da ferramenta `status` em `src/server.ts`. A partir da aprovação, esta seção substitui a tabela "Responsabilidade por tarefa" abaixo, que fica como histórico.
+
+### 1. Papéis
+
+| Papel (`role`) | Fase em `router.yaml` | Categoria capaz | Esforço inicial | Acesso | Saída (`output`) |
+|---|---|---|---|---|---|
+| `classify` | `triage` | cheap | low | leitura | `brief` (categoria, fase, ambiguidades) |
+| `trivial_edit` | `simple_edit` | cheap | low | escrita | `diff` |
+| `plan` | `planning` | strong | high | leitura | `brief` |
+| `implement` | `implementing` | mid | medium | escrita | `diff` |
+| `root_cause` | nova fase `root_cause` (strong/high) | strong | high | leitura primeiro; escrita só em subtarefa `implement` seguinte | `findings` |
+| `integrate` | `integration` | strong | high | escrita | `diff` |
+| `review` | `full_review` | mid para risco delimitado; strong para risco de contrato/arquitetura | medium / high | leitura | `findings` |
+
+O coordenador (a sessão que chama o router) não é um papel de subtarefa. Trabalhadores não chamam o router de forma recursiva, não criam subtarefas novas nem redistribuem trabalho; divergências voltam ao coordenador junto com as evidências.
+
+### 2. Campos da subtarefa
+
+Hoje `Subtask` tem `phase, tier, effort, brief, depends_on, files, reason`. O contrato acrescenta:
+
+| Campo | Tipo | Regra |
+|---|---|---|
+| `role` | um dos 7 papéis | Obrigatório. A `phase` é derivada do papel (tabela acima), não o contrário |
+| `depends_on` | `number[]` (seq de itens anteriores) | Igual ao atual: só aponta para itens anteriores. `fileDependencies` continua serializando itens que compartilham arquivos |
+| `files` | `string[]` | Arquivos permitidos. Para `diff`, mexer em arquivos fora da lista é achado de revisão, não erro do gate |
+| `acceptance` | `string[]`, mínimo 1 | Critérios verificáveis (um comando, teste ou comportamento observável). Sem critério, o plano é inválido e o planner tenta de novo (limite atual de 2 tentativas) |
+| `output` | `"brief" \| "diff" \| "findings"` | Define o modo: `brief` e `findings` rodam com `readOnly: true` e sem branch/merge; `diff` segue o fluxo atual de `runStep` |
+| `risk` | `"low" \| "high"` | Ver §4. Se o planner não informar, vale `low`, a menos que uma regra objetiva da §4 aponte `high` |
+| `risk_reasons` | `string[]` | Obrigatório quando `risk = high` |
+| `review_of` | `number \| null` | Só em subtarefas `review`: seq da subtarefa revisada. É gerado pelo `storeItems`, nunca pelo modelo |
+
+Formato estruturado das saídas (JSON validado com zod; se não validar, a tentativa conta como falha da tarefa, não como gate):
+
+- `brief`: `{ objective, files: string[], contracts: string[], acceptance: string[], subtasks?: Subtask[] }`. Se `plan` devolver `subtasks`, elas só entram no banco depois que o coordenador aceitar, e nunca automaticamente pelo trabalhador.
+- `diff`: `{ branch, commit, summary, checks: [{ cmd, exit, tail }] }`. O diff em si é o do branch (`base...HEAD`), com o commit gravado como snapshot.
+- `findings`: `{ verdict: "approve" | "changes_requested" | "inconclusive", snapshot: commit, items: [{ file, line?, severity: "blocker" | "major" | "minor", impact, evidence }] }`. Só `blocker` e `major` exigem ação; preferência de estilo não conta como achado.
+
+### 3. Seleção de modelo por papel
+
+Fontes: esta tabela (papel → fase/categoria/esforço) e `config/router.yaml` (`models`, `tiers`, `phases`, `enabled`). Ordem de aplicação:
+
+1. Candidatos = modelos da categoria capaz do papel (`tiers[tier]`).
+2. Ficam só os fornecedores `claude-code` e `codex`. `grok-build` está fora (já comentado no YAML; o contrato também o exclui por adaptador, para que reativar o YAML sem querer não o coloque de volta). `enabled: false` (Terra) sai.
+3. Saem os indisponíveis ou sem cota (`availability`, `markExhausted`), e também os modelos de `tried` no mesmo degrau, como hoje.
+4. **Mais barato capaz:** ordenar por `price.input + price.output` (o mesmo critério para todos, que dispensa estimar tokens). Em caso de empate, vale a ordem de `phases[fase].prefer` e depois a de `tiers`.
+5. Escalada: só depois da regra de reparo (§5), seguindo `escalation.ladder` da categoria inicial.
+
+Resultado com os preços atuais: cheap fica Haiku = Luna (empate, decidido por `prefer`), mid fica Sonnet = Sol (empate, decidido por `prefer`, ou seja Sol em `implement`) e strong fica **Opus (24) antes de Astra (60)**. Isso inverte o `prefer` atual de `integration` e `full_review` (Astra primeiro). É uma mudança de comportamento e precisa de aprovação explícita (pendência A).
+
+### 4. Revisão cruzada entre fornecedores (só com risco)
+
+`risk = high` quando pelo menos uma destas condições vale:
+
+- o papel é `integrate`, ou é `implement` derivado de `root_cause`;
+- `files` inclui schema/migration (`src/store/db.ts`), lockfile, `config/*.yaml`, código de publicação/merge (`src/git/`, `src/verify/`) ou tratamento de segredos/canais;
+- o diff final passa de `repair.simple.max_diff_lines` (100) ou altera uma assinatura exportada usada por outra subtarefa do plano;
+- o planner justificou o risco em `risk_reasons`.
+
+Regras:
+
+- `risk = low`: sem revisão por modelo. O gate (local/CI) é a única verificação. Isso cobre `trivial_edit` e a maioria dos `implement`.
+- `risk = high`: o `storeItems` insere logo após a subtarefa uma subtarefa `review` com `review_of`, `depends_on: [seq]` e `output: findings`.
+- **Fornecedor diferente:** na hora de agendar, o revisor é escolhido pela §3 com um filtro extra: `adapter` diferente do adaptador da última tentativa que passou no gate da subtarefa revisada. Se não houver modelo capaz do outro fornecedor disponível, a revisão fica em `waiting_quota`. Não cai para o mesmo fornecedor em silêncio.
+- **Sem merge antes da revisão:** a subtarefa de risco, depois de passar no gate, termina em `awaiting_review` (branch e commit gravados, sem merge e sem PR para release), do mesmo jeito que `pr_open` já faz no modo staged. Os dependentes dela esperam o merge; `awaiting_review` não satisfaz `depends_on`.
+- O revisor recebe o snapshot (commit), o brief, o `acceptance` e a saída dos checks; não executa testes nem edita.
+- `approve`: segue para o fluxo normal de merge/publicação da subtarefa revisada.
+- `changes_requested`: um reparo pontual (§5) no mesmo branch, com os achados `blocker`/`major` como diagnóstico. Depois vem o gate e uma nova revisão pelo mesmo modelo revisor. Uma segunda rejeição ou `inconclusive` deixa a subtarefa `failed` com os achados para o coordenador. Não há terceira rodada.
+
+### 5. Reparo pontual antes de escalar
+
+Mantém e generaliza o que `runStep` + `repairFor` já fazem:
+
+1. **Falha de gate** (`verdict.gate`) ou **achado de revisão**: primeiro um reparo pontual no mesmo worktree/branch. O prompt leva só o diagnóstico (últimas 60 linhas ou os achados) e o diff atual, com a instrução de não refazer nem ampliar o escopo. A classificação simples/complexa segue `repair.simple`: o simples vai para cheap (low, depois medium); o complexo fica na categoria original.
+2. Teto: `repair.max` (1) por falha; o reparo consome `escalation.max_attempts`.
+3. Se o reparo falhar, ou se a falha não for reparável (timeout, erro do agente, "agent made no changes", parser), aplica-se o comportamento atual: tentar outro modelo do mesmo degrau e só então subir na escada.
+4. Cota esgotada não é falha: marca o modelo e tenta o próximo da mesma categoria, sem gastar tentativa.
+5. Timeout não é sinal de modelo ruim. Consumo desconhecido continua `null`, nunca vira zero.
+
+### 6. Registro no banco compartilhado e exposição em `status`
+
+O banco é o mesmo arquivo (`defaultDbPath`, WAL) para servidor MCP e hooks. A migração é aditiva, no padrão de `openDb`:
+
+- `steps`: `role TEXT`, `acceptance TEXT` (JSON), `output_kind TEXT`, `risk TEXT`, `risk_reasons TEXT` (JSON), `review_of TEXT` (id do step), `result TEXT` (JSON da saída estruturada validada) e um novo status `awaiting_review`.
+- `attempts`: `kind` ganha o valor `review`, além de `task|repair`; `reason` registra o motivo da escolha ("mais barato capaz: opus-5-5 24 < gpt-6-astra 60", "revisão cruzada: autor codex"). O fornecedor é o `adapter`, que já existe.
+- `tasks`: status `awaiting_review` quando sobrar apenas revisão pendente.
+- `status({task_id})` passa a retornar, por step, `role, risk, risk_reasons, acceptance, output_kind, review_of, result` e as tentativas com `kind`/`reason`. Assim o coordenador (Claude ou Codex) consegue ver quem fez, quem revisou, o veredito e o custo sem ler o branch. Briefs, diagnósticos e achados seguem as mesmas regras de exposição já testadas em `run-plan.test.ts` e `repo.test.ts` (sem vazar dados de outra task).
+
+### 7. Pendências para aprovação
+
+- **A.** Aceitar a inversão para Opus antes de Astra em `integrate`/`full_review`/`root_cause` por causa do custo (§3).
+- **B.** Aceitar `awaiting_review` como novo estado de step/task, sem merge até a revisão aprovar (§4).
+- **C.** Aceitar a lista objetiva de gatilhos de risco (§4); ela pode ser movida para `router.yaml` (`cooperation.risk`) na implementação.
+- **D.** Na implementação, adicionar ao `router.yaml` a fase `root_cause` e um bloco `roles` com o mapeamento da §1. Hoje isso fica só neste documento.
+
 ## Responsabilidade por tarefa
+
+> Histórico. Depois que o contrato v1 for aprovado, a seleção segue a §3 do contrato acima e as linhas de Grok e Terra ficam desativadas.
 
 As escolhas abaixo são hipóteses do catálogo atual, a validar com tarefas representativas. Disponibilidade de binário, autenticação, acesso ao modelo e qualidade são verificações diferentes.
 
