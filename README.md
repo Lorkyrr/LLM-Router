@@ -34,7 +34,27 @@ Conecte `npm start` pelo cliente MCP via stdio. A inicialização faz pings pago
 
 ## Modo local (sem GitHub nem CI)
 
-`ROUTER_LOCAL_TEST="npm run typecheck && npm test"` (ou `verify.mode: local` + `verify.local.cmds` no catálogo; comandos em ordem, o primeiro que falhar encerra) faz `run_plan` verificar e mesclar com Git local. Cada passo roda num worktree em `.worktrees/` e o comando de teste no worktree decide o resultado. Teste vermelho reentra na escada de esforço com a saída no prompt. Teste verde faz rebase no base e fast-forward no checkout do projeto, serializado entre passos paralelos. A verificação dispensa fetch, PR e `gh`; os backups publicam os branches dos passos, o base mesclado e o histórico (`verify.push`, abaixo).
+`ROUTER_LOCAL_TEST="npm run typecheck && npm test"` (ou `verify.mode: local` + `verify.local.cmds` no catálogo; comandos em ordem, o primeiro que falhar encerra) faz `run_plan` verificar e mesclar com Git local. Cada passo roda num worktree em `.worktrees/` e o comando de teste no worktree decide o resultado. Teste vermelho tenta reparo pontual antes de reentrar na escada. Teste verde faz rebase no base e fast-forward no checkout do projeto, serializado entre passos paralelos. A verificação dispensa fetch, PR e `gh`; os backups publicam os branches dos passos, o base mesclado e o histórico (`verify.push`, abaixo).
+
+### Reparo antes da escalada
+
+Falhas de gate em `local`, `staged` e nos checks de `pr` tentam até `repair.max` reparos por tentativa de tarefa (padrão 1). Cada reparo recebe só as últimas 60 linhas do diagnóstico, com arquivos/testes falhos quando presentes na saída, e o diff completo commitado do branch contra o merge-base do base. Roda no mesmo worktree, com instrução de corrigir apenas aquele erro, sem receber o brief original. Após cada reparo, o mesmo gate decide o resultado.
+
+```yaml
+repair:
+  enabled: true
+  max: 1
+  simple:
+    max_failed_tests: 2
+    max_diff_lines: 100
+    patterns: ['error TS\d+', 'SyntaxError', 'Cannot find module', 'Module not found', 'Cannot find name', '\blint\b', 'Parsing error']
+```
+
+A heurística determinística usa o diagnóstico disponível, sem juiz LLM: conta linhas adicionadas/removidas (sem cabeçalhos) e falhas reportadas em TAP/node:test, Jest/Vitest ou `N failed/failing`. Dentro dos dois limiares, um padrão regex (case-insensitive) reconhecido ou poucos testes falhos classifica como simples: cheap/low no primeiro reparo, cheap/medium nas repetições. Diagnóstico desconhecido, muitos testes ou diff grande mantêm tier e esforço da tentativa de tarefa original. Padrões são validados ao carregar a configuração; não há classificação semântica nem garantia de economia real.
+
+Reparos consomem `escalation.max_attempts`, sem orçamento extra, para preservar o teto de falhas inclusive ao retomar um passo. Cota esgotada continua sem consumir esse teto nem `repair.max` e tenta outro modelo da categoria do reparo. Categoria indisponível pula o reparo. Depois do limite, a escada retoma os outros modelos do tier original e os degraus configurados; o reparo barato não altera essa categoria. `enabled: false` ou `max: 0` restauram o fluxo anterior. `agent made no changes`, erro do agente, conflito, checks pendentes/ausentes e falha de merge seguem a escada diretamente. Erro ao obter diff encerra o passo explicitamente.
+
+O SQLite registra `attempts.kind` (`task|repair`) e `attempts.reason` (classificação/motivo), além de modelo, tier, esforço, uso e resultado. A migração é aditiva/idempotente e marca tentativas antigas como `task`. O backup público inclui `kind`; `reason` e diagnósticos permanecem privados, como `failure_reason`.
 
 ### Modo staged: gate local e depois PR + CI + auto-merge
 

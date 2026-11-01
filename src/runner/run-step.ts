@@ -1,5 +1,5 @@
 import { join } from "node:path";
-import type { Config, Tier } from "../config.ts";
+import type { Config, Step, Tier } from "../config.ts";
 import type { Adapter, AdapterName } from "../adapters/types.ts";
 import { availability } from "../catalog/check.ts";
 import type { Exec } from "../exec.ts";
@@ -8,6 +8,7 @@ import { estimateCost } from "../policy/cost.ts";
 import { stepFor } from "../policy/escalate.ts";
 import type { Lease } from "./lease.ts";
 import { selectModel } from "../policy/select.ts";
+import { repairFor } from "../policy/repair.ts";
 import type { Repo, Runner } from "../store/repo.ts";
 import { verifyAndMerge, type Verdict } from "../verify/ci.ts";
 import { rebaseOnto, runLocalChecks, verifyLocal } from "../verify/local.ts";
@@ -33,9 +34,11 @@ export type StepOutcome =
 export const AGENT_TIMEOUT_MS = 30 * 60 * 1000;
 export const CI_TIMEOUT_MS = 30 * 60 * 1000;
 
-// Sessão nova a cada tentativa: o agente só vê o brief e o motivo da falha anterior, nunca o histórico.
+// Sessão nova para a tarefa: só brief e falha anterior; reparos recebem diagnóstico e diff.
 const promptFor = (brief: string, lastFailure: string | null) =>
   lastFailure ? `${brief}\n\nA tentativa anterior falhou: ${lastFailure}\nCorrija isso neste mesmo branch.` : brief;
+
+type Repair = { original: Step; diagnostic: string; choice?: ReturnType<typeof repairFor> };
 
 export async function runStep(d: StepDeps, stepId: string): Promise<StepOutcome> {
   const { cfg, repo } = d;
@@ -91,10 +94,12 @@ export async function runStep(d: StepDeps, stepId: string): Promise<StepOutcome>
     // `rung` = degrau da escada; `failures` = tentativas gastas (teto max_attempts). Falha não-quota tenta antes os
     // outros modelos do mesmo degrau (`tried`) e só então sobe o degrau.
     let rung = 1;
-    let failures = 0;
+    let failures = repo.listAttempts(stepId).filter(a => a.finished_at && a.failure_reason && a.failure_reason !== "quota exhausted").length;
     const tried = new Set<string>();
     let prNumber = step.pr_number;
     let lastFailure: string | null = null;
+    let repairs = 0;
+    let pendingRepair: Repair | null = null;
 
     for (;;) {
       const rungStep = failures >= cfg.escalation.max_attempts ? null : stepFor(cfg, step.tier as Tier, rung);
@@ -103,12 +108,29 @@ export async function runStep(d: StepDeps, stepId: string): Promise<StepOutcome>
         return { status: "failed", attempts: n, reason: lastFailure ?? "no attempts left" };
       }
       const taskPhase = repo.getTask(step.task_id)?.phase;
+      const repair: Repair | null = pendingRepair;
+      let repairPrompt: string | undefined;
+      if (repair) {
+        const base = mode === "local" ? d.base : `origin/${d.base}`;
+        const diff = await d.exec("git", ["diff", "--no-ext-diff", "--no-textconv", `${base}...HEAD`, "--"], { cwd: worktree });
+        if (diff.code !== 0) throw new Error(`repair diff failed: ${diff.stderr || diff.stdout}`);
+        // Fallback por cota mantém a classificação, mas precisa enxergar mudanças parciais do reparador anterior.
+        repair.choice ??= repairFor(cfg, repair.original, repair.diagnostic, diff.stdout, repairs);
+        const diagnostic = repair.diagnostic.split("\n").slice(-60).join("\n");
+        repairPrompt = `Corrija apenas o erro do gate abaixo neste mesmo worktree/branch. Não refaça a tarefa nem amplie o escopo.\n\nErro do gate (cauda; arquivos/testes falhos quando informados):\n${diagnostic}\n\nDiff atual do branch:\n${diff.stdout}`;
+      }
+      const choice = repair?.choice ?? rungStep;
       // Passos mid de um plano strong são implementação; escalada cheap→mid também.
-      const phase = !taskPhase ? undefined : cfg.phases[taskPhase].tier === rungStep.tier ? taskPhase
-        : rungStep.tier === "mid" ? "implementing" : rungStep.tier === "cheap" ? "simple_edit" : "integration";
+      const phase = repair && choice.tier === "cheap" ? "simple_edit"
+        : !taskPhase ? undefined : cfg.phases[taskPhase].tier === choice.tier ? taskPhase
+        : choice.tier === "mid" ? "implementing" : choice.tier === "cheap" ? "simple_edit" : "integration";
       const states: Record<string, { available: boolean }> = { ...availability(repo) };
-      for (const t of tried) states[t] = { available: false };
-      const name = selectModel(cfg, rungStep.tier, states, phase);
+      if (!repair) for (const t of tried) states[t] = { available: false };
+      const name = selectModel(cfg, choice.tier, states, phase);
+      if (!name && repair) {
+        pendingRepair = null;
+        continue;
+      }
       if (!name && tried.size) {
         rung++;
         tried.clear();
@@ -119,14 +141,16 @@ export async function runStep(d: StepDeps, stepId: string): Promise<StepOutcome>
         return { status: "waiting_quota", attempts: n };
       }
       const model = cfg.models[name]!;
+      if (!repair) repairs = 0;
       const attempt = repo.insertAttempt({
-        step_id: stepId, n: ++n, adapter: model.adapter, model: name, tier: rungStep.tier, effort: rungStep.effort, runner: d.runner,
+        step_id: stepId, n: ++n, adapter: model.adapter, model: name, tier: choice.tier, effort: choice.effort, runner: d.runner,
+        kind: repair ? "repair" : "task", reason: repair?.choice?.reason ?? lastFailure ?? "initial task",
       });
       open = { id: attempt.id, usage: {} };
 
       const title = step.brief.split("\n")[0]!.slice(0, 72);
       const run = await d.adapters[model.adapter].run({
-        model: model.id, effort: rungStep.effort, prompt: promptFor(step.brief, lastFailure), cwd: worktree,
+        model: model.id, effort: choice.effort, prompt: repairPrompt ?? promptFor(step.brief, lastFailure), cwd: worktree,
         timeoutMs: AGENT_TIMEOUT_MS,
       });
       const usage = {
@@ -135,6 +159,10 @@ export async function runStep(d: StepDeps, stepId: string): Promise<StepOutcome>
         est_cost_usd: run.cost_usd ?? estimateCost(model.price, run.usage),
       };
       open.usage = usage;
+      if (!run.quota_exhausted) {
+        pendingRepair = null;
+        if (repair) repairs++;
+      }
 
       if (!run.ok) {
         // Trabalho parcial de uma tentativa que falhou também vai para origin (o modo pr deixa o commit ao publishBranch).
@@ -144,7 +172,7 @@ export async function runStep(d: StepDeps, stepId: string): Promise<StepOutcome>
         if (run.quota_exhausted) {
           // Sem cota não é falha do passo: marca o modelo e tenta o próximo da mesma categoria sem subir a escada.
           // upsert antes: sem a linha em `models` o UPDATE não pega e o laço escolheria o mesmo modelo para sempre.
-          repo.upsertModel({ name, adapter: model.adapter, tier: rungStep.tier, preference: cfg.tiers[rungStep.tier].indexOf(name) });
+          repo.upsertModel({ name, adapter: model.adapter, tier: choice.tier, preference: cfg.tiers[choice.tier].indexOf(name) });
           repo.setAvailability(name, { available: false, quota_state: "exhausted" });
           finish({ failure_reason: "quota exhausted" });
           continue;
@@ -152,7 +180,7 @@ export async function runStep(d: StepDeps, stepId: string): Promise<StepOutcome>
         lastFailure = run.error ?? "agent failed";
         finish({ failure_reason: lastFailure });
         failures++;
-        tried.add(name);
+        if (!repair) tried.add(name);
         continue;
       }
 
@@ -161,7 +189,7 @@ export async function runStep(d: StepDeps, stepId: string): Promise<StepOutcome>
         lastFailure = "agent made no changes";
         finish({ failure_reason: lastFailure });
         failures++;
-        tried.add(name);
+        if (!repair) tried.add(name);
         continue;
       }
       if (mode !== "pr") await backup(branch, worktree);
@@ -191,7 +219,7 @@ export async function runStep(d: StepDeps, stepId: string): Promise<StepOutcome>
             lastFailure = "agent made no changes";
             finish({ failure_reason: lastFailure });
             failures++;
-            tried.add(name);
+            if (!repair) tried.add(name);
             continue;
           }
           prNumber = pub.pr_number;
@@ -231,7 +259,11 @@ export async function runStep(d: StepDeps, stepId: string): Promise<StepOutcome>
       lastFailure = verdict.reason;
       finish({ ci_result: stage + verdict.result, failure_reason: verdict.reason });
       failures++;
-      tried.add(name);
+      if (!repair) tried.add(name);
+      if (verdict.result === "failed" && verdict.gate && cfg.repair.enabled && repairs < cfg.repair.max && failures < cfg.escalation.max_attempts) {
+        const original: Step = repair?.original ?? rungStep;
+        pendingRepair = { original, diagnostic: verdict.reason };
+      }
     }
   } catch (e) {
     // Qualquer exceção (git, CLI, gh, runner) vira falha do passo: sem isso ele ficaria `running` e o attempt aberto.

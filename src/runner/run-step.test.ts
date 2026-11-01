@@ -8,7 +8,9 @@ import { makeRepo } from "../store/repo.ts";
 import type { Exec } from "../exec.ts";
 import { AGENT_TIMEOUT_MS, CI_TIMEOUT_MS, runStep } from "./run-step.ts";
 
-const cfg = loadConfig(new URL("../../config/router.yaml", import.meta.url).pathname);
+const defaults = loadConfig(new URL("../../config/router.yaml", import.meta.url).pathname);
+// Mantém cobertura da escada legada com reparos desativados; run-step.repair.test.ts cobre a política ativa.
+const cfg = { ...defaults, repair: { ...defaults.repair, enabled: false } };
 const usage = { input_tokens: 10, output_tokens: 20, cache_read_tokens: 0, cache_write_tokens: 0 };
 const good: RunResult = { ok: true, text: "feito", usage, cost_usd: 0.05, quota_exhausted: false };
 const bad = (error: string, quota = false): RunResult => ({ ok: false, text: "", usage, cost_usd: null, quota_exhausted: quota, error });

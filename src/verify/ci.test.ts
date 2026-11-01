@@ -28,9 +28,12 @@ test("deleteBranch false (or no branch) does not touch the remote", async () => 
 });
 
 test("red checks fail with the check output as reason and never merge", async () => {
-  const exec = fakeExec([view("MERGEABLE"), { when: sub("pr", "checks"), reply: { code: 1, stdout: "test\tfail\t1m", stderr: "" } }]);
+  const exec = fakeExec([view("MERGEABLE"),
+    { when: c => c.args.includes("--json"), reply: { code: 1, stdout: '[{"bucket":"fail","link":""}]', stderr: "" } },
+    { when: sub("pr", "checks"), reply: { code: 1, stdout: "test\tfail\t1m", stderr: "" } }]);
   const r = await verifyAndMerge(exec, o);
   assert.equal(r.result, "failed");
+  assert.equal("gate" in r && r.gate, true);
   assert.match((r as { reason: string }).reason, /test\tfail/);
   assert.ok(!exec.calls.some((c) => c.args[1] === "merge"));
 });
@@ -84,6 +87,14 @@ test("pending checks exit code (8) is a failure with a clear reason, not a merge
   const exec = fakeExec([view("MERGEABLE"), { when: sub("pr", "checks"), reply: { code: 8, stdout: "", stderr: "" } }]);
   const r = await verifyAndMerge(exec, o);
   assert.equal(r.result, "failed");
+  assert.ok(!("gate" in r));
+});
+
+test("gh transport errors are not repairable gates", async () => {
+  const exec = fakeExec([view("MERGEABLE"), { when: sub("pr", "checks"), reply: fail("error connecting to api.github.com") }]);
+  const r = await verifyAndMerge(exec, o);
+  assert.equal(r.result, "failed");
+  assert.ok(!("gate" in r));
 });
 
 test("checks not registered yet are polled again instead of failing the PR", async () => {

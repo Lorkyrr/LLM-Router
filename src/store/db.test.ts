@@ -1,6 +1,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { openDb } from "./db.ts";
+import { DatabaseSync } from "node:sqlite";
 
 test("openDb creates the five tables", () => {
   const db = openDb();
@@ -11,6 +12,17 @@ test("openDb creates the five tables", () => {
 test("openDb is idempotent on an existing database", () => {
   const db = openDb();
   assert.doesNotThrow(() => openDb(db));
+});
+
+test("openDb migrates old attempts without losing history and is repeatable", () => {
+  const db = new DatabaseSync(":memory:");
+  db.exec("CREATE TABLE attempts (id TEXT PRIMARY KEY, step_id TEXT); INSERT INTO attempts VALUES ('old', 'step')");
+  openDb(db);
+  openDb(db);
+  const old = db.prepare("SELECT * FROM attempts WHERE id = 'old'").get()!;
+  assert.equal(old.kind, "task");
+  assert.equal(old.reason, null);
+  assert.equal(old.step_id, "step");
 });
 
 test("every table has id, created_at and updated_at", () => {

@@ -65,7 +65,7 @@ models:
     pricing: { source: "https://developers.openai.com/api/docs/models/gpt-6-astra", checked_at: "2026-10-30", basis: standard_short_context }
     guidance: "Arquitetura difícil, causa raiz e revisão complexa em high; entregar briefs pequenos para implementação em mid."
 
-# Ordem = preferência. Cada modelo aparece em uma só categoria; o fallback nunca desce de categoria.
+# Ordem = preferência. Fallback mantém a categoria; só reparos simples podem usar cheap.
 tiers:
   cheap: [haiku-5-5, grok-fast, gpt-6-luna]
   mid: [sonnet-5-5, gpt-6.1-sol, gpt-6.1-terra]
@@ -92,6 +92,15 @@ escalation:
     strong:
       - { tier: strong, effort: high }
       - { tier: strong, effort: xhigh }
+
+# Até max reparos por falha de tarefa; consomem escalation.max_attempts.
+repair:
+  enabled: true
+  max: 1
+  simple:
+    max_failed_tests: 2
+    max_diff_lines: 100
+    patterns: ['error TS\d+', 'SyntaxError', 'Cannot find module', 'Module not found', 'Cannot find name', '\blint\b', 'Parsing error']
 
 verify: { auto_merge: true, delete_branch: true }
 

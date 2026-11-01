@@ -1,6 +1,6 @@
 import type { Exec } from "../exec.ts";
 
-export type Verdict = { result: "merged" } | { result: "passed" } | { result: "failed"; reason: string } | { result: "conflict"; reason: string };
+export type Verdict = { result: "merged" } | { result: "passed" } | { result: "failed"; reason: string; gate?: true } | { result: "conflict"; reason: string };
 
 const NO_CHECKS = /no checks reported/i;
 const NO_CHECKS_RETRIES = 6;
@@ -12,19 +12,23 @@ const RUN_ID = /\/runs\/(\d+)/;
 const conflictReason = (base: string) => `merge conflict: rebase no origin/${base}, resolva os conflitos e dê push`;
 
 // Melhor esforço: o reason já tem a tabela de checks; o log do job falho só enriquece.
-async function failedLogTail(exec: Exec, cwd: string, pr: string): Promise<string> {
+async function failedLogTail(exec: Exec, cwd: string, pr: string): Promise<{ tail: string; failed: boolean }> {
   const list = await exec("gh", ["pr", "checks", pr, "--json", "bucket,link"], { cwd });
-  if (list.code !== 0) return "";
+  const unknown = { tail: "", failed: false };
+  // `gh pr checks` também sai com 1 quando o JSON contém checks vermelhos.
+  if (list.code !== 0 && list.code !== 1) return unknown;
   let runId: string | undefined;
   try {
     const checks = JSON.parse(list.stdout) as { bucket: string; link: string }[];
-    runId = checks.find((c) => c.bucket === "fail")?.link.match(RUN_ID)?.[1];
+    const failed = checks.find((c) => c.bucket === "fail");
+    if (!failed) return unknown;
+    runId = failed.link?.match(RUN_ID)?.[1];
   } catch {
-    return "";
+    return unknown;
   }
-  if (!runId) return "";
+  if (!runId) return { tail: "", failed: true };
   const log = await exec("gh", ["run", "view", runId, "--log-failed"], { cwd });
-  return log.code === 0 ? log.stdout.trim().split("\n").slice(-LOG_TAIL_LINES).join("\n") : "";
+  return { tail: log.code === 0 ? log.stdout.trim().split("\n").slice(-LOG_TAIL_LINES).join("\n") : "", failed: true };
 }
 
 export async function verifyAndMerge(
@@ -47,8 +51,8 @@ export async function verifyAndMerge(
   }
   if (checks.code !== 0) {
     const table = checks.stdout.trim() || checks.stderr.trim() || `gh pr checks exit ${checks.code}`;
-    const tail = await failedLogTail(exec, o.cwd, pr);
-    return { result: "failed", reason: tail ? `${table}\n\n--- failed job log (last ${LOG_TAIL_LINES} lines) ---\n${tail}` : table };
+    const { tail, failed } = await failedLogTail(exec, o.cwd, pr);
+    return { result: "failed", reason: tail ? `${table}\n\n--- failed job log (last ${LOG_TAIL_LINES} lines) ---\n${tail}` : table, ...(checks.code === 1 && failed ? { gate: true as const } : {}) };
   }
 
   // auto_merge off: CI verde e PR aberto para revisão humana.

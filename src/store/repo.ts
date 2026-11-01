@@ -18,6 +18,7 @@ export type Step = Stamps & {
 };
 export type Attempt = Stamps & {
   step_id: string; n: number; adapter: string; model: string; tier: Tier; effort: Effort; runner: Runner;
+  kind: "task" | "repair"; reason: string | null;
   ci_result: string | null; failure_reason: string | null;
   input_tokens: number | null; output_tokens: number | null;
   cache_read_tokens: number | null; cache_write_tokens: number | null;
@@ -76,7 +77,7 @@ export function makeRepo(db: DatabaseSync, now: () => string = () => new Date().
       try {
         const tasks = db.prepare("SELECT id, phase, tier, status, created_at, updated_at FROM tasks ORDER BY id").all();
         const steps = db.prepare("SELECT id, task_id, seq, tier, depends_on, pr_number, status, created_at, updated_at FROM steps ORDER BY task_id, seq, id").all();
-        const attempts = db.prepare(`SELECT id, step_id, n, adapter, model, tier, effort, runner, ci_result,
+        const attempts = db.prepare(`SELECT id, step_id, n, adapter, model, tier, effort, runner, kind, ci_result,
           input_tokens, output_tokens, cache_read_tokens, cache_write_tokens, est_cost_usd,
           started_at, finished_at, created_at, updated_at FROM attempts ORDER BY step_id, n, id`).all();
         return [
@@ -109,6 +110,7 @@ export function makeRepo(db: DatabaseSync, now: () => string = () => new Date().
 
     insertAttempt: (a: {
       step_id: string; n: number; adapter: string; model: string; tier: Tier; effort: Effort; runner: Runner;
+      kind?: "task" | "repair"; reason?: string | null;
     }): Attempt => insert("attempts", { ...a, started_at: now() }) as unknown as Attempt,
     finishAttempt: (
       id: string,

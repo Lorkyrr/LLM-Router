@@ -17,13 +17,13 @@ const reason = (r: { stderr: string; stdout: string; code: number }) => r.stderr
 export async function runLocalChecks(
   exec: Exec,
   o: { worktree: string; cmds: string[][]; timeoutMs?: number },
-): Promise<{ result: "passed" } | { result: "failed"; reason: string }> {
+): Promise<{ result: "passed" } | { result: "failed"; reason: string; gate: true }> {
   for (const argv of o.cmds) {
     const [cmd, ...args] = argv as [string, ...string[]];
     const r = await exec(cmd, args, { cwd: o.worktree, timeoutMs: o.timeoutMs });
     if (r.code !== 0) {
       const out = (r.stdout + r.stderr).trim().split("\n").slice(-LOG_TAIL_LINES).join("\n");
-      return { result: "failed", reason: `$ ${argv.join(" ")} (exit ${r.code})\n${out}`.trim() };
+      return { result: "failed", reason: `$ ${argv.join(" ")} (exit ${r.code})\n${out}`.trim(), gate: true };
     }
   }
   return { result: "passed" };

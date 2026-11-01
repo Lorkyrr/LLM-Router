@@ -59,6 +59,18 @@ test("attempts store tokens and cost, and finishAttempt records the outcome", ()
   assert.equal(got?.output_tokens, 20);
   assert.equal(got?.est_cost_usd, 0.5);
   assert.ok(got?.finished_at);
+  assert.equal(got?.kind, "task");
+});
+
+test("repair attempt metadata persists while public history excludes its reason", () => {
+  const repo = setup();
+  const t = repo.insertTask({ request: "x" });
+  const s = repo.insertStep({ task_id: t.id, seq: 1, brief: "b", tier: "mid", depends_on: [], files: [] });
+  repo.insertAttempt({ step_id: s.id, n: 1, adapter: "claude-code", model: "haiku", tier: "cheap", effort: "low", runner: "hosted", kind: "repair", reason: "private repair diagnostic" });
+  assert.equal(repo.listAttempts(s.id)[0]!.reason, "private repair diagnostic");
+  const history = repo.exportHistory();
+  assert.doesNotMatch(history, /private repair diagnostic/);
+  assert.equal(JSON.parse(history.trim().split("\n").at(-1)!).kind, "repair");
 });
 
 test("usageByTier sums tokens and cost per tier across attempts", () => {

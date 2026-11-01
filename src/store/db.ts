@@ -85,5 +85,16 @@ export function openDb(target: string | DatabaseSync = ":memory:"): DatabaseSync
   // O hook do claude-code grava no mesmo arquivo que o servidor: WAL + espera evitam "database is locked".
   db.exec("PRAGMA journal_mode = WAL; PRAGMA busy_timeout = 5000;");
   db.exec(SCHEMA);
+  // Migração aditiva também em bancos anteriores: preserva o histórico e tolera processos concorrentes.
+  db.exec("BEGIN IMMEDIATE");
+  try {
+    const columns = db.prepare("PRAGMA table_info(attempts)").all().map((r) => r.name);
+    if (!columns.includes("kind")) db.exec("ALTER TABLE attempts ADD COLUMN kind TEXT NOT NULL DEFAULT 'task'");
+    if (!columns.includes("reason")) db.exec("ALTER TABLE attempts ADD COLUMN reason TEXT");
+    db.exec("COMMIT");
+  } catch (e) {
+    db.exec("ROLLBACK");
+    throw e;
+  }
   return db;
 }

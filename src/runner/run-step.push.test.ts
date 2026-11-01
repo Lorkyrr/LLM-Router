@@ -35,6 +35,7 @@ function setup(o: Opts = {}) {
     { when: (c) => c.cmd === "check", reply: () => ({ code: (o.checks ?? [0])[Math.min(checks++, (o.checks ?? [0]).length - 1)]!, stdout: "", stderr: "" }) },
     { when: (c) => a(c, "push"), reply: o.pushOk === false ? fail("no network") : ok() },
     { when: (c) => a(c, "status"), reply: ok(" M f\n") },
+    { when: (c) => a(c, "diff"), reply: ok("+f\n") },
     { when: (c) => a(c, "rev-parse"), reply: ok("main\n") },
     { when: (c) => ["worktree", "add", "commit", "rebase", "merge", "branch"].includes(c.args[0]!), reply: ok() },
   ]);

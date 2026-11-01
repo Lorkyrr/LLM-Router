@@ -49,7 +49,9 @@ flowchart TB
   BRANCH --> GH[GitHub Actions hospedado]
   SH & GH --> TEST{Testes no kind e cluster derrubado}
   TEST -->|passou| MERGE[Atualiza com a main, merge e apaga o branch]
-  TEST -->|falhou| ESC[Escalada: modelo ou esforço maior, até 3 tentativas]
+  TEST -->|falhou no gate| REPAIR[Reparo pontual: cheap se simples, senão mesmo tier]
+  REPAIR -->|passou| MERGE
+  REPAIR -->|falhou ou indisponível| ESC[Escalada existente, teto compartilhado de tentativas]
   ESC --> Q
   MERGE --> REP[Relato pro agente ponte]
   REP --> BR
@@ -130,7 +132,7 @@ dispatch:
 - **Dentro:** adaptadores `claude-code`, `grok-build` e `codex`, triagem, planejador, CI no kind, merge automático, modo nuvem.
 - **Fora do MVP:** adaptadores `zed` e `antigravity`, e todos os importadores de sessão (JSONL do Claude/Grok, SQLite do zed, conversas do antigravity). Aparecem no diagrama e na estrutura como destino, não como entrega.
 - **Grok bot:** só ponte (canal de conversa com o usuário), nunca executa passos; não é um adaptador de execução.
-- **Categorias:** cada modelo vive em uma só categoria (ex.: `gemini-pro` só em strong); o fallback nunca desce de categoria.
+- **Categorias:** cada modelo vive em uma só categoria (ex.: `gemini-pro` só em strong); o fallback mantém a categoria. Reparo simples tem exceção explícita para cheap.
 
 ## Regras principais
 
@@ -138,7 +140,7 @@ dispatch:
 2. **Fase define a categoria:** planejamento, integração e revisão completa vão pra modelos fortes; implementação de features já desenhadas vai pra médios (ex.: Sonnet em medium ou high); edição simples vai pra baratos.
 3. **Preferência e fallback:** dentro da categoria vale a ordem configurada (ex.: Gemini Flash antes do Haiku); modelo indisponível ou sem cota passa pro próximo.
 4. **Teste de disponibilidade:** na inicialização e periodicamente, cada adaptador lista modelos e faz um ping mínimo pra confirmar acesso.
-5. **Verificação por CI:** cada passo em branch próprio; testes em cluster kind efêmero; se passar, rebase, merge na main e branch apagado; se falhar, escalada até 3 tentativas.
+5. **Verificação por CI:** cada passo em branch próprio; testes em cluster kind efêmero; se passar, rebase, merge na main e branch apagado; falhas de gate tentam reparo pontual antes da escada, dentro de `max_attempts` (padrão 3).
 6. **Coexistência com o effortless:** o router define modelo e esforço só no despacho; dentro da sessão do claude-code, o effortless continua ajustando. Os parâmetros dele servem de base.
 7. **Modo nuvem:** com o PC desligado, o disparo vai pro GitHub Actions hospedado, com as mesmas regras. As sessões locais entram quando o PC liga e sincroniza.
 
@@ -160,6 +162,16 @@ dispatch:
 - As seções e o diagrama anteriores descrevem também objetivos futuros: cloud ainda é esqueleto; dispatch/recuperação não estão ligados ao fluxo principal; hook apenas registra mensagens. O banco global ainda exige separação por projeto via `ROUTER_DB`.
 - O executor continua exigindo alterações Git, portanto perguntas e revisões sem alteração não têm fluxo próprio. `verify.auto_merge: false` agora para após o CI verde, com o PR aberto. Não foram corrigidos nesta extensão.
 - Diretrizes de contribuição: [AGENTS.md](AGENTS.md). Operação: [README.md](README.md). Validação: [docs/e2e-smoke.md](docs/e2e-smoke.md). Documentos em `.planning/` preservam o escopo histórico do MVP.
+
+## Reparo pontual (2026-11-01)
+
+`verify/local.ts` e `verify/ci.ts` identificam falhas reais de gate com `gate: true`; conflito, falha de merge e checks pendentes/ausentes não acionam reparo. `runner/run-step.ts` mantém a escada e seu conjunto de modelos tentados separados do reparo. O diagnóstico (cauda de 60 linhas, incluindo caminhos/testes quando disponíveis) e `git diff <base>...HEAD` são o único contexto enviado no reparo, no mesmo worktree, sem o brief da tarefa. O diff usa o base local em `local` e `origin/<base>` nos demais modos, com diff externo/textconv desativados.
+
+`policy/repair.ts` classifica sem LLM: dentro de `repair.simple.max_diff_lines` (100 linhas alteradas) e `max_failed_tests` (2), um padrão regex configurado ou contagem positiva de poucos testes falhos permite cheap/low, passando para medium no reparo repetido. Fora disso, mantém tier e esforço da tarefa que originou o reparo. Contagens reconhecem TAP/node:test, Jest/Vitest e `N failed/failing`; diagnóstico desconhecido é complexo. Regex inválida impede carregar configuração. O seletor compartilhado continua respeitando preferências, `enabled` e disponibilidade na categoria escolhida.
+
+`repair.enabled: true` e `repair.max: 1` são padrões, inclusive em configurações antigas. O limite vale por tentativa de tarefa; reparos falhos consomem o mesmo `escalation.max_attempts`, sem budget adicional, e não mudam o degrau original. Cota esgotada tenta outro modelo do tier de reparo sem consumir limites de falha/reparo; categoria indisponível volta à escada. Sem alterações ou erro do agente, não há novo reparo. Falha ao obter diff encerra com motivo explícito. O contador de falhas persistidas impede renovar o budget ao retomar um passo.
+
+O banco recebe `attempts.kind` (`task|repair`, default `task`) e `attempts.reason` por migração aditiva transacional/idempotente; linhas antigas são preservadas. Cada tentativa mantém modelo/esforço, tokens/custo e resultado do gate. `reason` guarda a classificação ou motivo do despacho; `failure_reason` guarda a falha produzida. Só `kind` entra na exportação pública, mantendo motivos livres privados. Configuração completa e limites: [README](README.md#reparo-antes-da-escalada).
 
 ## Backup externo de código e estado
 

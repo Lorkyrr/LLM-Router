@@ -33,6 +33,18 @@ test("a valid config parses", () => {
   assert.equal(parseConfig(base()).models.haiku?.tier, "cheap");
 });
 
+test("repair defaults and thresholds are validated, including regex syntax", () => {
+  const c = parseConfig(base());
+  assert.equal(c.repair.enabled, true);
+  assert.equal(c.repair.max, 1);
+  assert.equal(c.repair.simple.max_failed_tests, 2);
+  assert.equal(c.repair.simple.max_diff_lines, 100);
+  assert.equal(parseConfig({ ...base(), repair: { max: 0 } }).repair.max, 0);
+  for (const repair of [{ max: -1 }, { max: 1.5 }, { simple: { max_diff_lines: -1 } }, { simple: { max_failed_tests: -1 } }, { simple: { patterns: ["["] } }]) {
+    assert.throws(() => parseConfig({ ...base(), repair }));
+  }
+});
+
 test("accepts a Codex model with auditable pricing and routing guidance", () => {
   const c = base();
   const raw = { ...c, models: { ...c.models, sol: {

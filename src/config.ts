@@ -20,6 +20,19 @@ const rank = (t: Tier) => TIERS.indexOf(t);
 const rate = z.number().nonnegative();
 const price = z.object({ input: rate, output: rate, cache_read: rate, cache_write: rate });
 
+const repairSimple = z.object({
+  max_failed_tests: z.number().int().nonnegative().default(2),
+  max_diff_lines: z.number().int().nonnegative().default(100),
+  patterns: z.array(z.string().min(1).refine((pattern) => {
+    try { new RegExp(pattern, "i"); return true; } catch { return false; }
+  }, "invalid repair regex")).default(["error TS\\d+", "SyntaxError", "Cannot find module", "Module not found", "Cannot find name", "\\blint\\b", "Parsing error"]),
+});
+const repair = z.object({
+  enabled: z.boolean().default(true),
+  max: z.number().int().nonnegative().default(1),
+  simple: repairSimple.prefault({}),
+});
+
 const model = z.object({
   adapter: z.enum(["claude-code", "grok-build", "codex"]),
   id: z.string().min(1),
@@ -52,6 +65,7 @@ const schema = z
         strong: z.array(step).min(1),
       }),
     }),
+    repair: repair.prefault({}),
     verify: z.object({
       // pr: push + CI do GitHub; local: gate local e merge no checkout; staged: gate local e depois PR + CI + merge.
       mode: z.enum(["pr", "local", "staged"]).default("pr"),
