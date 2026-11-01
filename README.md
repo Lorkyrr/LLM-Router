@@ -63,3 +63,7 @@ O handshake real foi validado com o SDK MCP. Neste sandbox, `claude mcp get` fec
 - [Validação manual](docs/e2e-smoke.md)
 
 O workflow cloud permanece esqueleto: banco remoto, instalação dos CLIs e acionamento da verificação precisam de integração. O adaptador Codex não resolve essas pendências. Os testes reais de leitura tentados não completaram; não há validação ponta a ponta com os modelos.
+
+## Licença
+
+GPL-3.0-or-later. Veja [LICENSE](LICENSE). Projeto open-source: derivados distribuídos devem permanecer sob a mesma licença.
