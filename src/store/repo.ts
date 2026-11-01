@@ -69,6 +69,26 @@ export function makeRepo(db: DatabaseSync, now: () => string = () => new Date().
   const toMessage = (r: Row): Message => ({ ...r, delivered: r.delivered === 1 }) as unknown as Message;
 
   return {
+    // Lista positiva: texto livre (prompts, briefs, caminhos, erros, mensagens) nunca entra no backup.
+    // SAVEPOINT dá um snapshot consistente inclusive com outro processo escrevendo via WAL.
+    exportHistory: (): string => {
+      db.exec("SAVEPOINT history_export");
+      try {
+        const tasks = db.prepare("SELECT id, phase, tier, status, created_at, updated_at FROM tasks ORDER BY id").all();
+        const steps = db.prepare("SELECT id, task_id, seq, tier, depends_on, pr_number, status, created_at, updated_at FROM steps ORDER BY task_id, seq, id").all();
+        const attempts = db.prepare(`SELECT id, step_id, n, adapter, model, tier, effort, runner, ci_result,
+          input_tokens, output_tokens, cache_read_tokens, cache_write_tokens, est_cost_usd,
+          started_at, finished_at, created_at, updated_at FROM attempts ORDER BY step_id, n, id`).all();
+        return [
+          { type: "schema", version: 1, billing_verified: false },
+          ...tasks.map((r) => ({ type: "task", ...r })),
+          ...steps.map((r) => ({ type: "step", ...r, depends_on: JSON.parse(String(r.depends_on)) })),
+          ...attempts.map((r) => ({ type: "attempt", ...r })),
+        ].map((r) => JSON.stringify(r)).join("\n") + "\n";
+      } finally {
+        db.exec("RELEASE history_export");
+      }
+    },
     insertTask: (t: { request: string; phase?: Phase; tier?: Tier; source_channel?: string }): Task =>
       insert("tasks", { ...t, status: "queued" }) as unknown as Task,
     getTask: (id: string): Task | undefined => byId("tasks", id) as unknown as Task | undefined,
